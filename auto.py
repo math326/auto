@@ -1,16 +1,70 @@
 import argparse
+import getpass
 import os
 import re
 import shutil
 import subprocess
 import sys
 
-from menus import show_kleopatra_menu, show_main_menu, show_nmap_menu
+from menus import show_kleopatra_menu, show_main_menu, show_nmap_menu, show_zip_menu
+from menus import show_ssh_menu
 from utils import clear_screen, input_with_prompt, print_header, wait_for_enter
 
+NMAP_COMMAND_TEMPLATES = {
+    "1": ["nmap", "-sn", "{target_net}"],
+    "2": ["nmap", "-sn", "{target_net}"],
+    "3": ["nmap", "-sV", "{target_host}"],
+    "4": ["nmap", "-sS", "{target_host}"],
+    "5": ["nmap", "-sU", "{target_host}"],
+    "6": ["nmap", "-sT", "{target_host}"],
+    "7": ["nmap", "-sL", "{target_net}"],
+    "8": ["nmap", "-p", "22,80,443", "{target_host}"],
+    "9": ["nmap", "-p-", "{target_host}"],
+    "10": ["nmap", "-A", "{target_host}"],
+    "11": ["nmap", "-O", "{target_host}"],
+    "12": ["nmap", "-v", "{target_host}"],
+    "13": ["nmap", "-iL", "{input_file}"],
+    "14": ["nmap", "-iL", "{input_file}", "-p", "22,80,443"],
+    "15": ["nmap", "-iL", "{input_file}", "-sV"],
+    "16": ["nmap", "-iL", "{input_file}", "-sS", "-p", "22,80,443"],
+    "17": ["nmap", "-iL", "{input_file}", "-sU", "-p", "53"],
+    "18": ["nmap", "-iL", "{input_file}", "-sT", "-p", "22,80,443"],
+    "19": ["nmap", "-iL", "{input_file}", "-sL"],
+    "20": ["nmap", "-iL", "{input_file}", "-sn"],
+    "21": ["nmap", "-iL", "{input_file}", "-sS", "-p-"],
+    "22": ["nmap", "-iL", "{input_file}", "-sU", "-p-"],
+    "23": ["nmap", "-iL", "{input_file}", "-sV", "-p", "22,80,443"],
+    "24": ["nmap", "-iL", "{input_file}", "-A"],
+    "25": ["nmap", "-iL", "{input_file}", "-O"],
+    "26": ["nmap", "-iL", "{input_file}", "-p", "22,80,443", "-v"],
+    "27": ["nmap", "-iL", "{input_file}", "-sU", "-p", "53", "-v"],
+    "28": ["nmap", "-iL", "{input_file}", "-sT", "-p", "22,80,443", "-v"],
+    "29": ["nmap", "-iL", "{input_file}", "-sS", "-p-", "-v"],
+    "30": ["nmap", "-iL", "{input_file}", "-sU", "-p-", "-v"],
+    "31": ["nmap", "-iL", "{input_file}", "-sV", "-p-", "-v"],
+    "32": ["nmap", "-iL", "{input_file}", "-A", "-v"],
+    "33": ["nmap", "-iL", "{input_file}", "-O", "-v"],
+    "34": ["nmap", "-p", "22,80,443", "-sV", "{target_host}"],
+    "35": ["nmap", "-sU", "-p", "53", "-sV", "{target_host}"],
+    "36": ["nmap", "-sT", "-p", "22,80,443", "-sV", "{target_host}"],
+    "37": ["nmap", "-sS", "-p-", "-sV", "{target_host}"],
+    "38": ["nmap", "-sU", "-p-", "-sV", "{target_host}"],
+    "39": ["nmap", "-p", "22,80,443", "-O", "{target_host}"],
+    "40": ["nmap", "-sU", "-p", "53", "-O", "{target_host}"],
+    "41": ["nmap", "-sT", "-p", "22,80,443", "-O", "{target_host}"],
+    "42": ["nmap", "-sS", "-p-", "-O", "{target_host}"],
+    "43": ["nmap", "-sU", "-p-", "-O", "{target_host}"],
+    "44": ["nmap", "-p", "22,80,443", "-sV", "-O", "{target_host}"],
+    "45": ["nmap", "-sU", "-p", "53", "-sV", "-O", "{target_host}"],
+    "46": ["nmap", "-sT", "-p", "22,80,443", "-sV", "-O", "{target_host}"],
+    "47": ["nmap", "-sS", "-p-", "-sV", "-O", "{target_host}"],
+    "48": ["nmap", "-sU", "-p-", "-sV", "-O", "{target_host}"],
+}
 
-def run_command(command, capture_output=False, text_input=None):
-    print(f"\nExecutando: {' '.join(command)}")
+
+def run_command(command, capture_output=False, text_input=None, display_command=None):
+    shown_command = display_command if display_command is not None else command
+    print(f"\nExecutando: {' '.join(shown_command)}")
     try:
         result = subprocess.run(
             command,
@@ -29,6 +83,12 @@ def run_command(command, capture_output=False, text_input=None):
     return None
 
 
+def ensure_sudo_for_nmap(command):
+    if command and command[0] == "nmap":
+        return ["sudo"] + command
+    return command
+
+
 def ensure_tool_exists(tool):
     if shutil.which(tool) is None:
         print(f"Dependencia ausente: {tool}")
@@ -36,14 +96,67 @@ def ensure_tool_exists(tool):
     return True
 
 
+def detect_package_manager():
+    if shutil.which("pacman"):
+        return "pacman"
+    if shutil.which("apt"):
+        return "apt"
+    return None
+
+
+def install_package(package_name):
+    package_manager = detect_package_manager()
+    if package_manager == "pacman":
+        return run_command(["sudo", "pacman", "-S", "--noconfirm", package_name])
+    if package_manager == "apt":
+        return run_command(["sudo", "apt", "install", package_name, "-y"])
+    print("Gerenciador de pacotes nao suportado automaticamente.")
+    return None
+
+
+def ensure_or_install_tool(tool_name, package_name=None):
+    if ensure_tool_exists(tool_name):
+        print(f"Ferramenta encontrada: {tool_name}")
+        return True
+
+    pkg = package_name or tool_name
+    print(f"Ferramenta ausente: {tool_name}")
+    print(f"Tentando instalar {pkg}...")
+    result = install_package(pkg)
+    if result is None:
+        return False
+
+    if not ensure_tool_exists(tool_name):
+        print(f"Nao foi possivel instalar/verificar: {tool_name}")
+        return False
+    return True
+
+
+def ensure_or_install_command(command_name):
+    package_manager = detect_package_manager()
+    package_overrides = {
+        "7z": {"apt": "p7zip-full", "pacman": "p7zip"},
+        "unrar": {"apt": "unrar", "pacman": "unrar"},
+        "rar": {"apt": "rar", "pacman": "rar"},
+        "ssh": {"apt": "openssh-client", "pacman": "openssh"},
+        "ssh-keygen": {"apt": "openssh-client", "pacman": "openssh"},
+        "sshpass": {"apt": "sshpass", "pacman": "sshpass"},
+    }
+    package_name = command_name
+    if command_name in package_overrides and package_manager in package_overrides[command_name]:
+        package_name = package_overrides[command_name][package_manager]
+    return ensure_or_install_tool(command_name, package_name)
+
+
 def install_crypto_dependencies():
     if ensure_tool_exists("gpg") and ensure_tool_exists("paperkey"):
         return True
 
-    if shutil.which("pacman"):
+    package_manager = detect_package_manager()
+    if package_manager == "pacman":
         print("Instalando dependencias com pacman...")
         result = run_command(["sudo", "pacman", "-S", "--noconfirm", "gnupg", "paperkey"])
-    elif shutil.which("apt"):
+    elif package_manager == "apt":
         print("Instalando dependencias com apt...")
         result = run_command(["sudo", "apt", "install", "gnupg", "paperkey", "-y"])
     else:
@@ -59,25 +172,471 @@ def install_crypto_dependencies():
     return True
 
 
+def _resolve_nmap_template_tokens(template):
+    resolved = []
+    values = {}
+    needs_file = "{input_file}" in template
+    needs_host = "{target_host}" in template
+    needs_net = "{target_net}" in template
+
+    if needs_file:
+        input_file = os.path.expanduser(
+            input_with_prompt("Nome/caminho do arquivo de IPs (ex: ips.txt): ").strip()
+        )
+        if not input_file or not os.path.exists(input_file):
+            print("Arquivo de IPs invalido.")
+            return None
+        values["{input_file}"] = input_file
+
+    if needs_host:
+        target_host = input_with_prompt("Digite o IP/host alvo: ").strip()
+        if not target_host:
+            print("IP/host invalido.")
+            return None
+        values["{target_host}"] = target_host
+
+    if needs_net:
+        target_net = input_with_prompt("Digite a rede/CIDR alvo (ex: 192.168.1.0/24): ").strip()
+        if not target_net:
+            print("Rede/CIDR invalida.")
+            return None
+        if "/" not in target_net:
+            target_net = f"{target_net}/24"
+            print(f"CIDR nao informado. Usando automaticamente: {target_net}")
+        values["{target_net}"] = target_net
+
+    for token in template:
+        resolved.append(values.get(token, token))
+    return resolved
+
+
 def nmap_scan_flow():
     print_header("Scanner Nmap")
     print("Use apenas em hosts/redes com autorizacao.")
-    if not ensure_tool_exists("nmap"):
-        return
-
-    target = input_with_prompt("Alvo (IP, host ou rede): ").strip()
-    if not target:
-        print("Alvo invalido.")
+    if not ensure_or_install_tool("nmap", "nmap"):
         return
 
     scan_choice = show_nmap_menu()
-    scan_map = {
-        "1": ["nmap", "-sn", target],
-        "2": ["nmap", "-F", target],
-        "3": ["nmap", "-p-", target],
-        "4": ["nmap", "-sV", "-sC", target],
+    template = NMAP_COMMAND_TEMPLATES.get(scan_choice)
+    if not template:
+        print("Opcao de scan invalida.")
+        return
+
+    command = _resolve_nmap_template_tokens(template)
+    if not command:
+        return
+    run_command(ensure_sudo_for_nmap(command))
+
+
+def prompt_existing_path(label):
+    value = os.path.expanduser(input_with_prompt(label).strip())
+    if not value or not os.path.exists(value):
+        print("Arquivo/pasta invalido(a).")
+        return None
+    return value
+
+
+def prompt_output_path(label):
+    value = os.path.expanduser(input_with_prompt(label).strip())
+    if not value:
+        print("Nome/caminho invalido.")
+        return None
+    return value
+
+
+def execute_zip_option(choice):
+    command_map = {
+        "1": ["gunzip"],
+        "2": ["gzip"],
+        "3": ["unzip"],
+        "4": ["zip"],
+        "5": ["zip"],
+        "6": ["zip"],
+        "7": ["unzip"],
+        "8": ["unzip"],
+        "9": ["tar"],
+        "10": ["tar"],
+        "11": ["tar"],
+        "12": ["tar"],
+        "13": ["tar"],
+        "14": ["tar"],
+        "15": ["7z"],
+        "16": ["7z"],
+        "17": ["rar"],
+        "18": ["unrar"],
+        "19": ["ar"],
+        "20": ["ar"],
+        "21": ["bzip2"],
+        "22": ["bunzip2"],
+        "23": ["xz"],
+        "24": ["unxz"],
+        "25": ["cpio"],
+        "26": ["cpio"],
+        "27": ["zcat"],
+        "28": ["bzcat"],
+        "29": ["xzcat"],
+        "30": ["7z"],
     }
-    run_command(scan_map[scan_choice])
+
+    required = command_map.get(choice, [])
+    for cmd in required:
+        if not ensure_or_install_command(cmd):
+            return
+
+    if choice == "1":
+        file_path = prompt_existing_path("Arquivo .gz: ")
+        if file_path:
+            run_command(["gunzip", file_path])
+    elif choice == "2":
+        file_path = prompt_existing_path("Arquivo para compactar em .gz: ")
+        if file_path:
+            run_command(["gzip", file_path])
+    elif choice == "3":
+        zip_file = prompt_existing_path("Arquivo .zip para extrair: ")
+        if not zip_file:
+            return
+        password = getpass.getpass("Senha (deixe vazio se nao tiver): ").strip()
+        command = ["unzip"]
+        display = ["unzip"]
+        if password:
+            command += ["-P", password]
+            display += ["-P", "******"]
+        command.append(zip_file)
+        display.append(zip_file)
+        run_command(command, display_command=display)
+    elif choice == "4":
+        zip_out = prompt_output_path("Nome do .zip de saida (ex: arquivo.zip): ")
+        file_path = prompt_existing_path("Arquivo para adicionar no .zip: ")
+        if zip_out and file_path:
+            run_command(["zip", zip_out, file_path])
+    elif choice == "5":
+        zip_out = prompt_output_path("Nome do .zip de saida (ex: pasta.zip): ")
+        folder = prompt_existing_path("Diretorio para zipar recursivamente: ")
+        if zip_out and folder:
+            run_command(["zip", "-r", zip_out, folder])
+    elif choice == "6":
+        zip_out = prompt_output_path("Nome do .zip de saida (ex: protegido.zip): ")
+        file_path = prompt_existing_path("Arquivo para zipar com senha: ")
+        if not zip_out or not file_path:
+            return
+        password = getpass.getpass("Digite a senha do .zip: ").strip()
+        if not password:
+            print("Senha invalida.")
+            return
+        run_command(
+            ["zip", "-P", password, zip_out, file_path],
+            display_command=["zip", "-P", "******", zip_out, file_path],
+        )
+    elif choice == "7":
+        zip_file = prompt_existing_path("Arquivo .zip para extrair: ")
+        destination = prompt_output_path("Diretorio de destino (ex: /tmp/destino): ")
+        if not zip_file or not destination:
+            return
+        os.makedirs(destination, exist_ok=True)
+        password = getpass.getpass("Senha (deixe vazio se nao tiver): ").strip()
+        command = ["unzip"]
+        display = ["unzip"]
+        if password:
+            command += ["-P", password]
+            display += ["-P", "******"]
+        command += [zip_file, "-d", destination]
+        display += [zip_file, "-d", destination]
+        run_command(command, display_command=display)
+    elif choice == "8":
+        zip_file = prompt_existing_path("Arquivo .zip para testar integridade: ")
+        if zip_file:
+            run_command(["unzip", "-t", zip_file])
+    elif choice == "9":
+        tar_file = prompt_output_path("Nome do arquivo .tar.gz (ex: arquivo.tar.gz): ")
+        folder = prompt_existing_path("Diretorio/pasta para compactar: ")
+        if tar_file and folder:
+            run_command(["tar", "-czvf", tar_file, folder])
+    elif choice == "10":
+        tar_file = prompt_existing_path("Arquivo .tar.gz para extrair: ")
+        if tar_file:
+            run_command(["tar", "-xzvf", tar_file])
+    elif choice == "11":
+        tar_file = prompt_output_path("Nome do arquivo .tar.bz2 (ex: arquivo.tar.bz2): ")
+        folder = prompt_existing_path("Diretorio/pasta para compactar: ")
+        if tar_file and folder:
+            run_command(["tar", "-cjvf", tar_file, folder])
+    elif choice == "12":
+        tar_file = prompt_existing_path("Arquivo .tar.bz2 para extrair: ")
+        if tar_file:
+            run_command(["tar", "-xjvf", tar_file])
+    elif choice == "13":
+        tar_file = prompt_output_path("Nome do arquivo .tar.xz (ex: arquivo.tar.xz): ")
+        folder = prompt_existing_path("Diretorio/pasta para compactar: ")
+        if tar_file and folder:
+            run_command(["tar", "-cJvf", tar_file, folder])
+    elif choice == "14":
+        tar_file = prompt_existing_path("Arquivo .tar.xz para extrair: ")
+        if tar_file:
+            run_command(["tar", "-xJvf", tar_file])
+    elif choice == "15":
+        out_file = prompt_output_path("Nome do arquivo .7z (ex: arquivo.7z): ")
+        input_file = prompt_existing_path("Arquivo para compactar em .7z: ")
+        if out_file and input_file:
+            run_command(["7z", "a", out_file, input_file])
+    elif choice == "16":
+        file_7z = prompt_existing_path("Arquivo .7z para extrair: ")
+        if not file_7z:
+            return
+        password = getpass.getpass("Senha (deixe vazio se nao tiver): ").strip()
+        command = ["7z", "x"]
+        display = ["7z", "x"]
+        if password:
+            command.append(f"-p{password}")
+            display.append("-p******")
+        command.append(file_7z)
+        display.append(file_7z)
+        run_command(command, display_command=display)
+    elif choice == "17":
+        out_file = prompt_output_path("Nome do arquivo .rar (ex: arquivo.rar): ")
+        input_file = prompt_existing_path("Arquivo para compactar em .rar: ")
+        if out_file and input_file:
+            run_command(["rar", "a", out_file, input_file])
+    elif choice == "18":
+        rar_file = prompt_existing_path("Arquivo .rar para extrair: ")
+        if not rar_file:
+            return
+        password = getpass.getpass("Senha (deixe vazio se nao tiver): ").strip()
+        command = ["unrar", "x"]
+        display = ["unrar", "x"]
+        if password:
+            command.append(f"-p{password}")
+            display.append("-p******")
+        command.append(rar_file)
+        display.append(rar_file)
+        run_command(command, display_command=display)
+    elif choice == "19":
+        out_file = prompt_output_path("Nome da biblioteca .a (ex: arquivo.a): ")
+        input_file = prompt_existing_path("Arquivo para adicionar na .a: ")
+        if out_file and input_file:
+            run_command(["ar", "-r", out_file, input_file])
+    elif choice == "20":
+        archive_file = prompt_existing_path("Arquivo .a para extrair: ")
+        if archive_file:
+            run_command(["ar", "-x", archive_file])
+    elif choice == "21":
+        input_file = prompt_existing_path("Arquivo para compactar em .bz2: ")
+        if input_file:
+            run_command(["bzip2", input_file])
+    elif choice == "22":
+        input_file = prompt_existing_path("Arquivo .bz2 para extrair: ")
+        if input_file:
+            run_command(["bunzip2", input_file])
+    elif choice == "23":
+        input_file = prompt_existing_path("Arquivo para compactar em .xz: ")
+        if input_file:
+            run_command(["xz", input_file])
+    elif choice == "24":
+        input_file = prompt_existing_path("Arquivo .xz para extrair: ")
+        if input_file:
+            run_command(["unxz", input_file])
+    elif choice == "25":
+        list_file = prompt_existing_path("Arquivo de lista (ex: lista.txt): ")
+        out_file = prompt_output_path("Arquivo .cpio de saida (ex: arquivo.cpio): ")
+        if not list_file or not out_file:
+            return
+        with open(list_file, "r", encoding="utf-8") as handle:
+            print(f"\nExecutando: cpio -ov -O {out_file} < {list_file}")
+            try:
+                subprocess.run(["cpio", "-ov", "-O", out_file], check=True, stdin=handle)
+            except subprocess.CalledProcessError as exc:
+                print(f"Comando falhou com codigo {exc.returncode}.")
+    elif choice == "26":
+        cpio_file = prompt_existing_path("Arquivo .cpio para extrair: ")
+        if cpio_file:
+            run_command(["cpio", "-idv", "-I", cpio_file])
+    elif choice == "27":
+        input_file = prompt_existing_path("Arquivo .gz para ler sem extrair: ")
+        if input_file:
+            run_command(["zcat", input_file])
+    elif choice == "28":
+        input_file = prompt_existing_path("Arquivo .bz2 para ler sem extrair: ")
+        if input_file:
+            run_command(["bzcat", input_file])
+    elif choice == "29":
+        input_file = prompt_existing_path("Arquivo .xz para ler sem extrair: ")
+        if input_file:
+            run_command(["xzcat", input_file])
+    elif choice == "30":
+        input_file = prompt_existing_path("Arquivo .7z para listar conteudo: ")
+        if input_file:
+            run_command(["7z", "l", input_file])
+
+
+def zip_menu_flow():
+    while True:
+        clear_screen()
+        print_header("Auto - Zip")
+        choice = show_zip_menu()
+        if choice == "0":
+            return
+        execute_zip_option(choice)
+        wait_for_enter()
+
+
+def ensure_ssh_service_running():
+    if not ensure_or_install_command("ssh") or not ensure_or_install_command("ssh-keygen"):
+        return False
+
+    active_ssh = subprocess.run(
+        ["systemctl", "is-active", "ssh"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode == 0
+    active_sshd = subprocess.run(
+        ["systemctl", "is-active", "sshd.service"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode == 0
+    if active_ssh or active_sshd:
+        print("Servico SSH ja esta ativo.")
+        return True
+
+    print("Ativando servico SSH...")
+    result = run_command(["sudo", "systemctl", "enable", "--now", "ssh"])
+    if result is None:
+        result = run_command(["sudo", "systemctl", "enable", "--now", "sshd.service"])
+    return result is not None
+
+
+def append_ssh_config_block(alias, hostname, user, identity_file):
+    ssh_dir = os.path.expanduser("~/.ssh")
+    os.makedirs(ssh_dir, exist_ok=True)
+    os.chmod(ssh_dir, 0o700)
+    config_path = os.path.join(ssh_dir, "config")
+
+    block = (
+        f"\nHost {alias}\n"
+        f"  HostName {hostname}\n"
+        f"  User {user}\n"
+        f"  IdentityFile {identity_file}\n"
+        f"  IdentitiesOnly yes\n"
+    )
+    with open(config_path, "a", encoding="utf-8") as config_file:
+        config_file.write(block)
+    os.chmod(config_path, 0o600)
+    return config_path
+
+
+def ssh_github_flow():
+    print_header("SSH - GitHub")
+    email = input_with_prompt("Digite seu email do GitHub: ").strip()
+    if not email:
+        print("Email invalido.")
+        return
+
+    host_ip = input_with_prompt("Digite o IP/Host para o alias (ex: 192.168.1.10): ").strip()
+    if not host_ip:
+        print("IP/Host invalido.")
+        return
+
+    alias = input_with_prompt("Nome do alias SSH (padrao: kali): ").strip() or "kali"
+    print("\nGerando chave (responda as perguntas do ssh-keygen no terminal):")
+    run_command(["ssh-keygen", "-t", "ed25519", "-C", email])
+
+    ssh_dir = os.path.expanduser("~/.ssh")
+    os.makedirs(ssh_dir, exist_ok=True)
+    os.chmod(ssh_dir, 0o700)
+
+    append_ssh_config_block(alias, host_ip, "git", "~/.ssh/id_ed25519")
+    run_command(["chmod", "700", os.path.expanduser("~/.ssh")])
+    run_command(["chmod", "600", os.path.expanduser("~/.ssh/config")])
+    run_command(["ssh", alias])
+
+    pub_key_path = os.path.expanduser("~/.ssh/id_ed25519.pub")
+    if os.path.exists(pub_key_path):
+        result = run_command(["cat", pub_key_path], capture_output=True)
+        if result and result.stdout:
+            print("\nConteudo da chave publica:")
+            print(result.stdout.strip())
+
+    print("\nAgora copie esse texto e coloque na sua conta GitHub.")
+    print("Depois rode: ssh -T git@github.com para testar a conexao.")
+
+
+def ssh_other_machine_flow():
+    print_header("SSH - Outra Maquina")
+    local_ip = input_with_prompt("Digite o IP da sua maquina local: ").strip()
+    remote_ip = input_with_prompt("Digite o IP da maquina remota: ").strip()
+    remote_user = input_with_prompt("Digite o usuario da maquina remota: ").strip()
+    alias = input_with_prompt("Nome da maquina/alias SSH (ex: kali): ").strip()
+    if not local_ip or not remote_ip or not remote_user or not alias:
+        print("Dados invalidos.")
+        return
+
+    password = getpass.getpass("Digite a senha SSH da maquina remota: ").strip()
+    if not password:
+        print("Senha invalida.")
+        return
+
+    if not ensure_or_install_command("sshpass"):
+        print("Nao foi possivel instalar/verificar sshpass.")
+        return
+
+    key_path = os.path.expanduser(f"~/.ssh/id_rsa_{alias}")
+    print("\nGerando chave RSA (responda as perguntas do ssh-keygen no terminal):")
+    run_command(["ssh-keygen", "-t", "rsa", "-b", "4096", "-f", key_path])
+
+    pub_key_path = f"{key_path}.pub"
+    if not os.path.exists(pub_key_path):
+        print("Chave publica nao encontrada.")
+        return
+
+    with open(pub_key_path, "r", encoding="utf-8") as pub_file:
+        public_key_content = pub_file.read().strip()
+    if not public_key_content:
+        print("Conteudo da chave publica vazio.")
+        return
+
+    remote_script = (
+        "mkdir -p ~/.ssh && "
+        "chmod 700 ~/.ssh && "
+        "touch ~/.ssh/authorized_keys && "
+        "grep -qxF '{key}' ~/.ssh/authorized_keys || echo '{key}' >> ~/.ssh/authorized_keys && "
+        "chmod 600 ~/.ssh/authorized_keys && "
+        "chown $USER:$USER ~/.ssh -R"
+    ).format(key=public_key_content.replace("'", "'\"'\"'"))
+
+    run_command(
+        ["sshpass", "-p", password, "ssh", f"{remote_user}@{remote_ip}", remote_script],
+        display_command=[
+            "sshpass",
+            "-p",
+            "******",
+            "ssh",
+            f"{remote_user}@{remote_ip}",
+            remote_script,
+        ],
+    )
+
+    append_ssh_config_block(alias, remote_ip, remote_user, f"~/.ssh/id_rsa_{alias}")
+    run_command(["chmod", "600", os.path.expanduser("~/.ssh/config")])
+    run_command(["ssh", alias])
+
+
+def ssh_menu_flow():
+    if not ensure_ssh_service_running():
+        print("Nao foi possivel validar/ativar SSH.")
+        wait_for_enter()
+        return
+
+    while True:
+        clear_screen()
+        print_header("Auto - SSH")
+        choice = show_ssh_menu()
+        if choice == "0":
+            return
+        if choice == "1":
+            ssh_github_flow()
+        elif choice == "2":
+            ssh_other_machine_flow()
+        wait_for_enter()
 
 
 def create_paperkey_template(template_path):
@@ -362,6 +921,11 @@ def reconstruct_private_key_kleopatra_flow():
 
 
 def kleopatra_menu_flow():
+    if not ensure_or_install_tool("kleopatra", "kleopatra"):
+        print("Nao foi possivel validar/instalar Kleopatra.")
+        wait_for_enter()
+        return
+
     while True:
         clear_screen()
         print_header("Auto - Kleopatra")
@@ -493,35 +1057,22 @@ def build_parser():
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    nmap_parser = subparsers.add_parser("nmap", help="Executa um scan Nmap.")
-    nmap_parser.add_argument("target", help="Alvo (IP, host ou rede).")
-    nmap_parser.add_argument(
-        "--mode",
-        choices=["ping", "fast", "full", "detect"],
-        default="fast",
-        help="Tipo de scan.",
-    )
+    subparsers.add_parser("nmap", help="Abre o menu interativo de scans Nmap.")
 
     subparsers.add_parser("recover-key", help="Fluxo guiado de recuperacao de chave.")
     subparsers.add_parser("encrypt-file", help="Fluxo guiado para criptografar arquivo.")
     subparsers.add_parser("encrypt-text", help="Fluxo guiado para criptografar texto.")
     subparsers.add_parser("kleopatra", help="Menu de automacao da Kleopatra.")
+    subparsers.add_parser("zip", help="Menu de automacao de compactacao/extracao.")
+    subparsers.add_parser("ssh", help="Menu de automacao para chaves SSH.")
 
     return parser
 
 
 def run_cli(args):
     if args.command == "nmap":
-        if not ensure_tool_exists("nmap"):
-            return 1
-        mode_map = {
-            "ping": ["nmap", "-sn", args.target],
-            "fast": ["nmap", "-F", args.target],
-            "full": ["nmap", "-p-", args.target],
-            "detect": ["nmap", "-sV", "-sC", args.target],
-        }
-        result = run_command(mode_map[args.mode])
-        return 0 if result else 1
+        nmap_scan_flow()
+        return 0
     if args.command == "recover-key":
         recover_key_flow()
         return 0
@@ -533,6 +1084,12 @@ def run_cli(args):
         return 0
     if args.command == "kleopatra":
         kleopatra_menu_flow()
+        return 0
+    if args.command == "zip":
+        zip_menu_flow()
+        return 0
+    if args.command == "ssh":
+        ssh_menu_flow()
         return 0
 
     interactive_menu()
