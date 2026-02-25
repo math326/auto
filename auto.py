@@ -1051,6 +1051,92 @@ def import_public_key_file():
     return run_command(["gpg", "--import", key_path]) is not None
 
 
+def import_private_key_file():
+    key_path = os.path.expanduser(
+        input_with_prompt("Caminho da chave privada (.asc/.gpg) para importar: ").strip()
+    )
+    if not key_path or not os.path.exists(key_path):
+        print("Arquivo de chave privada invalido.")
+        return False
+    return run_command(["gpg", "--import", key_path]) is not None
+
+
+def collect_pgp_block_auto():
+    print("\nCole o bloco da chave PGP (publica ou privada).")
+    print("Finalize ao colar a linha -----END PGP ... BLOCK-----")
+
+    begin_re = re.compile(r"^-----BEGIN PGP (.+)-----$")
+    end_re = re.compile(r"^-----END PGP (.+)-----$")
+    lines = []
+    started = False
+    block_type = None
+
+    while True:
+        line = input()
+        stripped = line.strip()
+        begin_match = begin_re.match(stripped)
+        if begin_match and not started:
+            started = True
+            block_type = begin_match.group(1)
+            lines.append(line)
+            continue
+
+        if started:
+            lines.append(line)
+            end_match = end_re.match(stripped)
+            if end_match and end_match.group(1) == block_type:
+                break
+
+    return "\n".join(lines).strip(), (block_type or "")
+
+
+def import_public_key_text():
+    block, detected_type = collect_pgp_block_auto()
+    if not block:
+        print("Texto de chave publica invalido.")
+        return False
+    if "PRIVATE KEY BLOCK" in detected_type:
+        print("Bloco detectado automaticamente como CHAVE PRIVADA. Importando mesmo assim.")
+    elif "PUBLIC KEY BLOCK" in detected_type:
+        print("Bloco detectado como CHAVE PUBLICA.")
+    return run_command(["gpg", "--import"], text_input=block) is not None
+
+
+def import_private_key_text():
+    block, detected_type = collect_pgp_block_auto()
+    if not block:
+        print("Texto de chave privada invalido.")
+        return False
+    if "PUBLIC KEY BLOCK" in detected_type:
+        print("Bloco detectado automaticamente como CHAVE PUBLICA. Importando mesmo assim.")
+    elif "PRIVATE KEY BLOCK" in detected_type:
+        print("Bloco detectado como CHAVE PRIVADA.")
+    return run_command(["gpg", "--import"], text_input=block) is not None
+
+
+def import_key_menu(private=False):
+    title = "Importar Chave Privada" if private else "Importar Chave Publica"
+    print_header(f"Kleopatra - {title}")
+    print("1) Importar arquivo .asc")
+    print("2) Importar texto da chave")
+    print("0) Voltar")
+    choice = input_with_prompt("Escolha: ").strip()
+    if choice == "0":
+        return
+    if choice == "1":
+        ok = import_private_key_file() if private else import_public_key_file()
+    elif choice == "2":
+        ok = import_private_key_text() if private else import_public_key_text()
+    else:
+        print("Opcao invalida.")
+        return
+
+    if ok:
+        print("Importacao concluida com sucesso.")
+    else:
+        print("Falha na importacao.")
+
+
 def generate_gpg_keypair():
     print("\nGeracao de novo par de chaves GPG.")
     print("Voce respondera o assistente interativo do GPG no terminal.")
@@ -1239,6 +1325,10 @@ def kleopatra_menu_flow():
             decrypt_file_flow()
         elif choice == "5":
             reconstruct_private_key_kleopatra_flow()
+        elif choice == "6":
+            import_key_menu(private=False)
+        elif choice == "7":
+            import_key_menu(private=True)
         wait_for_enter()
 
 

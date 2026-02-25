@@ -76,8 +76,10 @@ def show_kleopatra_menu():
     print("3) Criptografar arquivo")
     print("4) Descriptografar arquivo")
     print("5) Reconstruir chave privada")
+    print("6) Importar chave publica")
+    print("7) Importar chave privada")
     print("0) Voltar")
-    return _read_choice({"0", "1", "2", "3", "4", "5"})
+    return _read_choice({"0", "1", "2", "3", "4", "5", "6", "7"})
 
 
 def show_zip_menu():
