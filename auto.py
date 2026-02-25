@@ -871,7 +871,12 @@ def docker_menu_flow():
         elif choice == "5":
             selected = select_container_from_list()
             if selected:
-                run_command(docker_command(["start", "-ai", selected["id"]]))
+                status = selected.get("status", "").lower()
+                if status.startswith("up"):
+                    run_command(docker_command(["exec", "-it", selected["name"], "bash"]))
+                else:
+                    if run_command(docker_command(["start", selected["id"]])) is not None:
+                        run_command(docker_command(["exec", "-it", selected["name"], "bash"]))
         elif choice == "6":
             selected = select_container_from_list()
             if selected:
