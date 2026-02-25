@@ -1041,11 +1041,48 @@ def list_public_key_emails():
     return emails
 
 
+def import_public_key_file():
+    key_path = os.path.expanduser(
+        input_with_prompt("Caminho da chave publica (.asc/.gpg) para importar: ").strip()
+    )
+    if not key_path or not os.path.exists(key_path):
+        print("Arquivo de chave publica invalido.")
+        return False
+    return run_command(["gpg", "--import", key_path]) is not None
+
+
+def generate_gpg_keypair():
+    print("\nGeracao de novo par de chaves GPG.")
+    print("Voce respondera o assistente interativo do GPG no terminal.")
+    return run_command(["gpg", "--full-generate-key"]) is not None
+
+
 def choose_recipient_email():
     emails = list_public_key_emails()
     if not emails:
         print("Nenhuma chave publica com email foi encontrada no GPG/Kleopatra.")
-        return None
+        print("1) Importar chave publica agora")
+        print("2) Gerar novo par de chaves agora")
+        print("0) Voltar")
+        action = input_with_prompt("Escolha: ").strip()
+        if action == "1":
+            if import_public_key_file():
+                emails = list_public_key_emails()
+                if not emails:
+                    print("Ainda nao ha chaves publicas com email apos a importacao.")
+                    return None
+            else:
+                return None
+        elif action == "2":
+            if generate_gpg_keypair():
+                emails = list_public_key_emails()
+                if not emails:
+                    print("Ainda nao ha chaves publicas com email apos gerar as chaves.")
+                    return None
+            else:
+                return None
+        else:
+            return None
 
     print("\nCHAVES PUBLICAS (emails):")
     for index, email in enumerate(emails, start=1):
