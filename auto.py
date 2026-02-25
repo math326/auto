@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from menus import show_docker_menu, show_kleopatra_menu, show_main_menu, show_nmap_menu, show_website_menu, show_zip_menu
@@ -1137,14 +1138,38 @@ def configure_tor_hidden_service(port):
 
     if run_command(["sudo", "cp", tmp_torrc, torrc_path]) is None:
         return False
+
+    # Garante diretorio com permissao correta para o usuario do servico Tor.
+    run_command(["sudo", "mkdir", "-p", hidden_dir])
+    run_command(["sudo", "chmod", "700", hidden_dir])
+    for tor_user in ["debian-tor:debian-tor", "tor:tor", "_tor:_tor"]:
+        chown_attempt = subprocess.run(
+            ["sudo", "chown", tor_user, hidden_dir],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if chown_attempt.returncode == 0:
+            break
+
+    # Valida configuracao antes de reiniciar o servico.
+    run_command(["sudo", "tor", "--verify-config", "-f", torrc_path])
     if not ensure_service_enabled_started(["tor", "tor.service"]):
         return False
 
-    hostname_result = run_command(["sudo", "cat", hostname_path], capture_output=True)
-    if hostname_result and hostname_result.stdout.strip():
-        print(f"\nEndereco onion: {hostname_result.stdout.strip()}")
+    onion_address = ""
+    for _ in range(12):
+        hostname_result = run_command(["sudo", "cat", hostname_path], capture_output=True)
+        if hostname_result and hostname_result.stdout.strip():
+            onion_address = hostname_result.stdout.strip()
+            break
+        time.sleep(1)
+
+    if onion_address:
+        print(f"\nEndereco onion: {onion_address}")
     else:
         print("Nao foi possivel ler hostname onion automaticamente.")
+        print("Verifique status/logs: sudo systemctl status tor && sudo journalctl -u tor -n 50")
     return True
 
 
