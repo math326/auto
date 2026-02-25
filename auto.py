@@ -905,6 +905,26 @@ def ensure_service_enabled_started(service_names):
     return False
 
 
+def existing_system_user(candidates):
+    for user in candidates:
+        exists = subprocess.run(
+            ["id", "-u", user],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if exists.returncode == 0:
+            return user
+    return None
+
+
+def ensure_tor_service_running():
+    # Debian/Ubuntu normalmente usa tor@default.service; outras distros usam tor.service.
+    if ensure_service_enabled_started(["tor@default.service", "tor.service", "tor"]):
+        return True
+    return False
+
+
 def ensure_website_dependencies(include_nginx=True, include_tor=False):
     package_manager = detect_package_manager()
     apt_packages = ["nodejs", "npm", "postgresql", "postgresql-contrib"]
@@ -936,7 +956,7 @@ def ensure_website_dependencies(include_nginx=True, include_tor=False):
         return False
     if include_nginx and not ensure_service_enabled_started(["nginx", "nginx.service"]):
         return False
-    if include_tor and not ensure_service_enabled_started(["tor", "tor.service"]):
+    if include_tor and not ensure_tor_service_running():
         return False
     return True
 
@@ -1142,19 +1162,15 @@ def configure_tor_hidden_service(port):
     # Garante diretorio com permissao correta para o usuario do servico Tor.
     run_command(["sudo", "mkdir", "-p", hidden_dir])
     run_command(["sudo", "chmod", "700", hidden_dir])
-    for tor_user in ["debian-tor:debian-tor", "tor:tor", "_tor:_tor"]:
-        chown_attempt = subprocess.run(
-            ["sudo", "chown", tor_user, hidden_dir],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if chown_attempt.returncode == 0:
-            break
+    tor_user = existing_system_user(["debian-tor", "tor", "_tor"])
+    if tor_user:
+        run_command(["sudo", "chown", f"{tor_user}:{tor_user}", hidden_dir])
 
-    # Valida configuracao antes de reiniciar o servico.
-    run_command(["sudo", "tor", "--verify-config", "-f", torrc_path])
-    if not ensure_service_enabled_started(["tor", "tor.service"]):
+    # Valida configuracao no usuario do servico para evitar falso erro de ownership.
+    if tor_user:
+        run_command(["sudo", "-u", tor_user, "tor", "--verify-config", "-f", torrc_path])
+
+    if not ensure_tor_service_running():
         return False
 
     onion_address = ""
@@ -1170,6 +1186,7 @@ def configure_tor_hidden_service(port):
     else:
         print("Nao foi possivel ler hostname onion automaticamente.")
         print("Verifique status/logs: sudo systemctl status tor && sudo journalctl -u tor -n 50")
+        return False
     return True
 
 
