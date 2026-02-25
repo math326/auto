@@ -531,12 +531,7 @@ def ssh_github_flow():
         print("Email invalido.")
         return
 
-    host_ip = input_with_prompt("Digite o IP/Host para o alias (ex: 192.168.1.10): ").strip()
-    if not host_ip:
-        print("IP/Host invalido.")
-        return
-
-    alias = input_with_prompt("Nome do alias SSH (padrao: kali): ").strip() or "kali"
+    alias = input_with_prompt("Nome do alias SSH para GitHub (padrao: github): ").strip() or "github"
     print("\nGerando chave (responda as perguntas do ssh-keygen no terminal):")
     run_command(["ssh-keygen", "-t", "ed25519", "-C", email])
 
@@ -544,10 +539,9 @@ def ssh_github_flow():
     os.makedirs(ssh_dir, exist_ok=True)
     os.chmod(ssh_dir, 0o700)
 
-    append_ssh_config_block(alias, host_ip, "git", "~/.ssh/id_ed25519")
+    append_ssh_config_block(alias, "github.com", "git", "~/.ssh/id_ed25519")
     run_command(["chmod", "700", os.path.expanduser("~/.ssh")])
     run_command(["chmod", "600", os.path.expanduser("~/.ssh/config")])
-    run_command(["ssh", alias])
 
     pub_key_path = os.path.expanduser("~/.ssh/id_ed25519.pub")
     if os.path.exists(pub_key_path):
@@ -556,8 +550,9 @@ def ssh_github_flow():
             print("\nConteudo da chave publica:")
             print(result.stdout.strip())
 
-    print("\nAgora copie esse texto e coloque na sua conta GitHub.")
-    print("Depois rode: ssh -T git@github.com para testar a conexao.")
+    print("\nAgora copie esse texto e adicione nas chaves SSH da sua conta GitHub.")
+    print("Teste a conexao com: ssh -T git@github.com")
+    print(f"Se quiser testar pelo alias, rode: ssh -T {alias}")
 
 
 def ssh_other_machine_flow():
