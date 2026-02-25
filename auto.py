@@ -919,10 +919,21 @@ def existing_system_user(candidates):
 
 
 def ensure_tor_service_running():
-    # Debian/Ubuntu normalmente usa tor@default.service; outras distros usam tor.service.
-    if ensure_service_enabled_started(["tor@default.service", "tor.service", "tor"]):
-        return True
-    return False
+    # tor@default.service costuma ser unidade estaticа no Debian/Kali.
+    if run_command(["sudo", "systemctl", "start", "tor@default.service"]) is not None:
+        return "tor@default.service"
+    if run_command(["sudo", "systemctl", "enable", "--now", "tor.service"]) is not None:
+        return "tor.service"
+    if run_command(["sudo", "systemctl", "enable", "--now", "tor"]) is not None:
+        return "tor"
+    return None
+
+
+def restart_tor_service():
+    for svc in ["tor@default.service", "tor.service", "tor"]:
+        if run_command(["sudo", "systemctl", "restart", svc]) is not None:
+            return svc
+    return None
 
 
 def ensure_website_dependencies(include_nginx=True, include_tor=False):
@@ -1164,13 +1175,19 @@ def configure_tor_hidden_service(port):
     run_command(["sudo", "chmod", "700", hidden_dir])
     tor_user = existing_system_user(["debian-tor", "tor", "_tor"])
     if tor_user:
-        run_command(["sudo", "chown", f"{tor_user}:{tor_user}", hidden_dir])
+        run_command(["sudo", "chown", "-R", f"{tor_user}:{tor_user}", hidden_dir])
 
     # Valida configuracao no usuario do servico para evitar falso erro de ownership.
     if tor_user:
         run_command(["sudo", "-u", tor_user, "tor", "--verify-config", "-f", torrc_path])
 
-    if not ensure_tor_service_running():
+    running_svc = ensure_tor_service_running()
+    if not running_svc:
+        return False
+
+    # Aplica imediatamente a nova configuracao do torrc.
+    restarted = restart_tor_service()
+    if not restarted:
         return False
 
     onion_address = ""
