@@ -263,6 +263,14 @@ def prompt_output_path(label):
     return value
 
 
+def ensure_file_extension(path_value, extension):
+    if not path_value:
+        return path_value
+    if path_value.lower().endswith(extension.lower()):
+        return path_value
+    return f"{path_value}{extension}"
+
+
 def execute_zip_option(choice):
     command_map = {
         "1": ["gunzip"],
@@ -327,24 +335,34 @@ def execute_zip_option(choice):
         zip_out = prompt_output_path("Nome do .zip de saida (ex: arquivo.zip): ")
         file_path = prompt_existing_path("Arquivo para adicionar no .zip: ")
         if zip_out and file_path:
+            zip_out = ensure_file_extension(zip_out, ".zip")
             run_command(["zip", zip_out, file_path])
     elif choice == "5":
         zip_out = prompt_output_path("Nome do .zip de saida (ex: pasta.zip): ")
         folder = prompt_existing_path("Diretorio para zipar recursivamente: ")
         if zip_out and folder:
+            zip_out = ensure_file_extension(zip_out, ".zip")
             run_command(["zip", "-r", zip_out, folder])
     elif choice == "6":
         zip_out = prompt_output_path("Nome do .zip de saida (ex: protegido.zip): ")
-        file_path = prompt_existing_path("Arquivo para zipar com senha: ")
-        if not zip_out or not file_path:
+        input_path = prompt_existing_path("Arquivo/pasta para zipar com senha: ")
+        if not zip_out or not input_path:
             return
+        zip_out = ensure_file_extension(zip_out, ".zip")
         password = getpass.getpass("Digite a senha do .zip: ").strip()
         if not password:
             print("Senha invalida.")
             return
+        command = ["zip"]
+        display = ["zip"]
+        if os.path.isdir(input_path):
+            command.append("-r")
+            display.append("-r")
+        command += ["-P", password, zip_out, input_path]
+        display += ["-P", "******", zip_out, input_path]
         run_command(
-            ["zip", "-P", password, zip_out, file_path],
-            display_command=["zip", "-P", "******", zip_out, file_path],
+            command,
+            display_command=display,
         )
     elif choice == "7":
         zip_file = prompt_existing_path("Arquivo .zip para extrair: ")
@@ -369,6 +387,7 @@ def execute_zip_option(choice):
         tar_file = prompt_output_path("Nome do arquivo .tar.gz (ex: arquivo.tar.gz): ")
         folder = prompt_existing_path("Diretorio/pasta para compactar: ")
         if tar_file and folder:
+            tar_file = ensure_file_extension(tar_file, ".tar.gz")
             run_command(["tar", "-czvf", tar_file, folder])
     elif choice == "10":
         tar_file = prompt_existing_path("Arquivo .tar.gz para extrair: ")
@@ -378,6 +397,7 @@ def execute_zip_option(choice):
         tar_file = prompt_output_path("Nome do arquivo .tar.bz2 (ex: arquivo.tar.bz2): ")
         folder = prompt_existing_path("Diretorio/pasta para compactar: ")
         if tar_file and folder:
+            tar_file = ensure_file_extension(tar_file, ".tar.bz2")
             run_command(["tar", "-cjvf", tar_file, folder])
     elif choice == "12":
         tar_file = prompt_existing_path("Arquivo .tar.bz2 para extrair: ")
@@ -387,6 +407,7 @@ def execute_zip_option(choice):
         tar_file = prompt_output_path("Nome do arquivo .tar.xz (ex: arquivo.tar.xz): ")
         folder = prompt_existing_path("Diretorio/pasta para compactar: ")
         if tar_file and folder:
+            tar_file = ensure_file_extension(tar_file, ".tar.xz")
             run_command(["tar", "-cJvf", tar_file, folder])
     elif choice == "14":
         tar_file = prompt_existing_path("Arquivo .tar.xz para extrair: ")
@@ -396,6 +417,7 @@ def execute_zip_option(choice):
         out_file = prompt_output_path("Nome do arquivo .7z (ex: arquivo.7z): ")
         input_file = prompt_existing_path("Arquivo para compactar em .7z: ")
         if out_file and input_file:
+            out_file = ensure_file_extension(out_file, ".7z")
             run_command(["7z", "a", out_file, input_file])
     elif choice == "16":
         file_7z = prompt_existing_path("Arquivo .7z para extrair: ")
@@ -414,6 +436,7 @@ def execute_zip_option(choice):
         out_file = prompt_output_path("Nome do arquivo .rar (ex: arquivo.rar): ")
         input_file = prompt_existing_path("Arquivo para compactar em .rar: ")
         if out_file and input_file:
+            out_file = ensure_file_extension(out_file, ".rar")
             run_command(["rar", "a", out_file, input_file])
     elif choice == "18":
         rar_file = prompt_existing_path("Arquivo .rar para extrair: ")
@@ -432,6 +455,7 @@ def execute_zip_option(choice):
         out_file = prompt_output_path("Nome da biblioteca .a (ex: arquivo.a): ")
         input_file = prompt_existing_path("Arquivo para adicionar na .a: ")
         if out_file and input_file:
+            out_file = ensure_file_extension(out_file, ".a")
             run_command(["ar", "-r", out_file, input_file])
     elif choice == "20":
         archive_file = prompt_existing_path("Arquivo .a para extrair: ")
@@ -458,6 +482,7 @@ def execute_zip_option(choice):
         out_file = prompt_output_path("Arquivo .cpio de saida (ex: arquivo.cpio): ")
         if not list_file or not out_file:
             return
+        out_file = ensure_file_extension(out_file, ".cpio")
         with open(list_file, "r", encoding="utf-8") as handle:
             print(f"\nExecutando: cpio -ov -O {out_file} < {list_file}")
             try:
