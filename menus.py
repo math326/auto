@@ -119,6 +119,18 @@ def show_zip_menu():
 def show_ssh_menu():
     print("\nSSH:")
     print("1) Gerar par de chaves SSH para GitHub")
-    print("2) Gerar par de chaves para outra maquina")
+    print("2) Gerar par de chaves e conectar maquina remota por chave SSH")
     print("0) Voltar")
     return _read_choice({"0", "1", "2"})
+
+
+def show_docker_menu():
+    print("\nDOCKER:")
+    print("1) Criar container Debian")
+    print("2) Criar container Ubuntu")
+    print("3) Criar container Debian com senha (SSH)")
+    print("4) Criar container Ubuntu com senha (SSH)")
+    print("5) Entrar em um container")
+    print("6) Apagar container")
+    print("0) Voltar")
+    return _read_choice({"0", "1", "2", "3", "4", "5", "6"})

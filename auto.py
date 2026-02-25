@@ -5,8 +5,9 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
-from menus import show_kleopatra_menu, show_main_menu, show_nmap_menu, show_zip_menu
+from menus import show_docker_menu, show_kleopatra_menu, show_main_menu, show_nmap_menu, show_zip_menu
 from menus import show_ssh_menu
 from utils import clear_screen, input_with_prompt, print_header, wait_for_enter
 
@@ -62,7 +63,7 @@ NMAP_COMMAND_TEMPLATES = {
 }
 
 
-def run_command(command, capture_output=False, text_input=None, display_command=None):
+def run_command(command, capture_output=False, text_input=None, display_command=None, workdir=None):
     shown_command = display_command if display_command is not None else command
     print(f"\nExecutando: {' '.join(shown_command)}")
     try:
@@ -72,6 +73,7 @@ def run_command(command, capture_output=False, text_input=None, display_command=
             capture_output=capture_output,
             text=True,
             input=text_input,
+            cwd=workdir,
         )
         return result
     except FileNotFoundError:
@@ -634,6 +636,212 @@ def ssh_menu_flow():
         wait_for_enter()
 
 
+CONTAINER_APT_PACKAGES = (
+    "nano vim less man-db "
+    "net-tools iproute2 iputils-ping dnsutils curl wget ca-certificates "
+    "build-essential git python3 python3-pip openjdk-21-jdk "
+    "sudo procps util-linux lsb-release "
+    "rsync unzip tree htop "
+    "parted fdisk exfatprogs dosfstools "
+    "openssh-server"
+)
+
+
+def has_docker_compose():
+    if shutil.which("docker-compose"):
+        return True
+    check = subprocess.run(
+        ["docker", "compose", "version"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return check.returncode == 0
+
+
+def ensure_docker_ready():
+    package_manager = detect_package_manager()
+    docker_installed = ensure_tool_exists("docker")
+    compose_installed = has_docker_compose()
+
+    if not docker_installed or not compose_installed:
+        print("Instalando Docker e Docker Compose...")
+        if package_manager == "pacman":
+            result = run_command(["sudo", "pacman", "-S", "--noconfirm", "docker", "docker-compose"])
+        elif package_manager == "apt":
+            result = run_command(["sudo", "apt", "install", "-y", "docker.io", "docker-compose"])
+        else:
+            print("Gerenciador de pacotes nao suportado automaticamente.")
+            return False
+        if result is None:
+            return False
+
+    if not ensure_tool_exists("docker"):
+        return False
+
+    is_active = subprocess.run(
+        ["systemctl", "is-active", "docker"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode == 0
+
+    if not is_active:
+        print("Servico Docker nao esta ativo. Ativando...")
+        if run_command(["sudo", "systemctl", "enable", "--now", "docker"]) is None:
+            return False
+    else:
+        print("Servico Docker ja esta ativo.")
+    return True
+
+
+def run_container_setup_commands(container_id):
+    run_command(["docker", "start", container_id])
+    run_command(["docker", "exec", container_id, "bash", "-lc", "apt update"])
+    run_command(
+        [
+            "docker",
+            "exec",
+            container_id,
+            "bash",
+            "-lc",
+            f"apt install -y {CONTAINER_APT_PACKAGES}",
+        ]
+    )
+
+
+def create_basic_container(image_name):
+    run_command(["docker", "pull", image_name])
+    created = run_command(["docker", "run", "-dit", image_name, "bash"], capture_output=True)
+    if not created or not created.stdout.strip():
+        print("Nao foi possivel criar o container.")
+        return
+    container_id = created.stdout.strip()
+    run_command(["docker", "ps", "-a"])
+    run_container_setup_commands(container_id)
+    print(f"\nContainer pronto. ID: {container_id}")
+    print(f"Para entrar agora: docker start -ai {container_id}")
+
+
+def create_password_container(base_image):
+    password = getpass.getpass("Qual sera a senha SSH do container? ").strip()
+    if not password:
+        print("Senha invalida.")
+        return
+
+    project_dir = Path.cwd() / "container_ssh"
+    project_dir.mkdir(exist_ok=True)
+    dockerfile_path = project_dir / "Dockerfile"
+    safe_password = password.replace("\\", "\\\\").replace('"', '\\"')
+
+    dockerfile_content = (
+        f"FROM {base_image}\n\n"
+        "ENV DEBIAN_FRONTEND=noninteractive\n\n"
+        "RUN apt-get update && apt-get install -y openssh-server sudo\n"
+        "RUN mkdir /var/run/sshd\n"
+        f'RUN useradd -m aluno && echo "aluno:{safe_password}" | chpasswd\n'
+        "RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config\n"
+        "RUN sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config\n"
+        "EXPOSE 22\n"
+        'CMD ["/usr/sbin/sshd","-D"]\n'
+    )
+    dockerfile_path.write_text(dockerfile_content, encoding="utf-8")
+    print(f"Dockerfile gerado em: {dockerfile_path}")
+
+    image_tag_default = "meu_ssh_debian" if "debian" in base_image else "meu_ssh_ubuntu"
+    image_tag = input_with_prompt(f"Nome da imagem Docker (padrao: {image_tag_default}): ").strip() or image_tag_default
+    container_name_default = "lab1" if "debian" in base_image else "lab2"
+    container_name = input_with_prompt(
+        f"Nome do container (padrao: {container_name_default}): "
+    ).strip() or container_name_default
+    port = input_with_prompt("Porta local para SSH (padrao: 2222): ").strip() or "2222"
+
+    run_command(["docker", "build", "-t", image_tag, "."], workdir=str(project_dir))
+    run_command(["docker", "run", "-d", "-p", f"{port}:22", "--name", container_name, image_tag])
+    run_container_setup_commands(container_name)
+    print(f"\nContainer com SSH pronto. Use: ssh aluno@127.0.0.1 -p {port}")
+
+
+def list_containers():
+    result = run_command(
+        ["docker", "ps", "-a", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}"],
+        capture_output=True,
+    )
+    if not result or not result.stdout.strip():
+        return []
+
+    containers = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        containers.append(
+            {
+                "id": parts[0],
+                "image": parts[1],
+                "name": parts[2],
+                "status": parts[3],
+            }
+        )
+    return containers
+
+
+def select_container_from_list():
+    containers = list_containers()
+    if not containers:
+        print("Nenhum container encontrado.")
+        return None
+
+    print("\nCONTAINERS:")
+    for idx, item in enumerate(containers, start=1):
+        print(f"{idx}) {item['id']} | {item['name']} | {item['image']} | {item['status']}")
+
+    choice = input_with_prompt("Escolha o numero do container: ").strip()
+    if not choice.isdigit():
+        print("Opcao invalida.")
+        return None
+    index = int(choice)
+    if index < 1 or index > len(containers):
+        print("Opcao invalida.")
+        return None
+    return containers[index - 1]
+
+
+def docker_menu_flow():
+    if not ensure_docker_ready():
+        print("Nao foi possivel validar/instalar Docker.")
+        wait_for_enter()
+        return
+
+    while True:
+        clear_screen()
+        print_header("Auto - Docker")
+        choice = show_docker_menu()
+        if choice == "0":
+            return
+        if choice == "1":
+            create_basic_container("debian")
+        elif choice == "2":
+            create_basic_container("ubuntu")
+        elif choice == "3":
+            create_password_container("debian:stable")
+        elif choice == "4":
+            create_password_container("ubuntu:22.04")
+        elif choice == "5":
+            selected = select_container_from_list()
+            if selected:
+                run_command(["docker", "start", "-ai", selected["id"]])
+        elif choice == "6":
+            selected = select_container_from_list()
+            if selected:
+                status = selected.get("status", "").lower()
+                if status.startswith("up"):
+                    run_command(["docker", "rm", "-f", selected["id"]])
+                else:
+                    run_command(["docker", "rm", selected["id"]])
+        wait_for_enter()
+
+
 def create_paperkey_template(template_path):
     if os.path.exists(template_path):
         return
@@ -1060,6 +1268,7 @@ def build_parser():
     subparsers.add_parser("kleopatra", help="Menu de automacao da Kleopatra.")
     subparsers.add_parser("zip", help="Menu de automacao de compactacao/extracao.")
     subparsers.add_parser("ssh", help="Menu de automacao para chaves SSH.")
+    subparsers.add_parser("docker", help="Menu de automacao para containers Docker.")
 
     return parser
 
@@ -1085,6 +1294,9 @@ def run_cli(args):
         return 0
     if args.command == "ssh":
         ssh_menu_flow()
+        return 0
+    if args.command == "docker":
+        docker_menu_flow()
         return 0
 
     interactive_menu()
