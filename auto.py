@@ -894,6 +894,228 @@ def docker_menu_flow():
         wait_for_enter()
 
 
+def ensure_website_dependencies():
+    package_manager = detect_package_manager()
+    if package_manager == "apt":
+        if run_command(["sudo", "apt", "update"]) is None:
+            return False
+        if run_command(
+            [
+                "sudo",
+                "apt",
+                "install",
+                "-y",
+                "nodejs",
+                "npm",
+                "nginx",
+                "postgresql",
+                "postgresql-contrib",
+            ]
+        ) is None:
+            return False
+    elif package_manager == "pacman":
+        if run_command(
+            ["sudo", "pacman", "-S", "--noconfirm", "nodejs", "npm", "nginx", "postgresql"]
+        ) is None:
+            return False
+    else:
+        print("Gerenciador de pacotes nao suportado automaticamente.")
+        return False
+
+    # Arquivos iniciais do Postgres no Arch normalmente precisam de initdb.
+    if package_manager == "pacman" and not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
+        run_command(["sudo", "-iu", "postgres", "initdb", "-D", "/var/lib/postgres/data"])
+
+    run_command(["sudo", "systemctl", "enable", "--now", "postgresql"])
+    run_command(["sudo", "systemctl", "start", "postgresql"])
+    run_command(["sudo", "systemctl", "enable", "--now", "nginx"])
+    run_command(["sudo", "systemctl", "start", "nginx"])
+    return True
+
+
+def sanitize_db_owner(raw_name):
+    first = raw_name.strip().split()[0].lower() if raw_name.strip() else ""
+    clean = re.sub(r"[^a-z0-9_]", "", first)
+    return clean
+
+
+def sanitize_db_name(raw_name):
+    clean = re.sub(r"[^a-z0-9_]", "", raw_name.strip().lower())
+    return clean
+
+
+def sql_literal(raw_value):
+    return raw_value.replace("'", "''")
+
+
+def validate_port_or_none(raw):
+    if not raw.isdigit():
+        return None
+    port = int(raw)
+    if port <= 1024 or port > 65535:
+        return None
+    return port
+
+
+def configure_nginx_proxy(port):
+    run_command(["sudo", "grep", "-R", "listen 80", "-n", "/etc/nginx"])
+
+    # Se algo estiver ocupando 80, tenta liberar para o Nginx.
+    check_80 = subprocess.run(
+        ["sudo", "ss", "-ltnp", "sport", "=", ":80"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if check_80.stdout and "LISTEN" in check_80.stdout:
+        run_command(["sudo", "fuser", "-k", "80/tcp"])
+
+    run_command(["sudo", "mv", "/etc/nginx/conf.d/youhost.conf", "/etc/nginx/conf.d/youhost.conf.bak"])
+
+    conf_content = (
+        "server {\n"
+        "    listen 80;\n"
+        "    server_name _;\n\n"
+        "    location / {\n"
+        f"        proxy_pass http://127.0.0.1:{port};\n"
+        "        proxy_http_version 1.1;\n\n"
+        "        proxy_set_header Upgrade $http_upgrade;\n"
+        "        proxy_set_header Connection 'upgrade';\n"
+        "        proxy_set_header Host $host;\n"
+        "        proxy_cache_bypass $http_upgrade;\n"
+        "    }\n"
+        "}\n"
+    )
+    tmp_conf = "/tmp/auto_website_nginx.conf"
+    with open(tmp_conf, "w", encoding="utf-8") as file:
+        file.write(conf_content)
+    run_command(["sudo", "cp", tmp_conf, "/etc/nginx/conf.d/auto_website.conf"])
+    run_command(["sudo", "nginx", "-t"])
+    run_command(["sudo", "systemctl", "restart", "nginx"])
+
+
+def setup_postgres_db(db_user, db_password, db_name):
+    password_sql = sql_literal(db_password)
+    run_command(
+        [
+            "sudo",
+            "-u",
+            "postgres",
+            "psql",
+            "-c",
+            f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{db_user}') "
+            f"THEN CREATE ROLE {db_user} LOGIN PASSWORD '{password_sql}'; END IF; END $$;",
+        ]
+    )
+    run_command(
+        [
+            "sudo",
+            "-u",
+            "postgres",
+            "psql",
+            "-c",
+            f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '{db_name}') "
+            f"THEN CREATE DATABASE {db_name} OWNER {db_user}; END IF; END $$;",
+        ]
+    )
+
+
+def website_flow():
+    print_header("Auto - Website")
+    if not ensure_website_dependencies():
+        print("Falha ao preparar dependencias de website.")
+        return
+
+    project_name = input_with_prompt("Nome da pasta do projeto: ").strip()
+    db_owner_raw = input_with_prompt("Nome do usuario dono do banco (primeiro nome): ").strip()
+    db_password = getpass.getpass("Senha do usuario do banco: ").strip()
+    db_name_raw = input_with_prompt("Nome do banco de dados: ").strip()
+
+    port = None
+    while port is None:
+        raw_port = input_with_prompt("Porta localhost acima de 1024 para rodar o projeto: ").strip()
+        port = validate_port_or_none(raw_port)
+        if port is None:
+            print("Porta invalida. Use um numero entre 1025 e 65535.")
+
+    if not project_name or not db_owner_raw or not db_password or not db_name_raw:
+        print("Dados invalidos. Todos os campos sao obrigatorios.")
+        return
+
+    db_owner = sanitize_db_owner(db_owner_raw)
+    db_name = sanitize_db_name(db_name_raw)
+    if not db_owner:
+        print("Nome de usuario do banco invalido.")
+        return
+    if not db_name:
+        print("Nome do banco invalido.")
+        return
+
+    project_dir = Path.cwd() / project_name
+    public_dir = project_dir / "public"
+    images_dir = public_dir / "imagens"
+    project_dir.mkdir(exist_ok=True)
+    public_dir.mkdir(exist_ok=True)
+    images_dir.mkdir(exist_ok=True)
+
+    server_js = (
+        "const express = require('express');\n"
+        "const path = require('path');\n"
+        "const app = express();\n"
+        f"const PORT = {port};\n\n"
+        "app.use(express.static(path.join(__dirname, 'public')));\n\n"
+        "app.get('/', (req, res) => {\n"
+        "  res.sendFile(path.join(__dirname, 'public', 'index.html'));\n"
+        "});\n\n"
+        "app.listen(PORT, '127.0.0.1', () => {\n"
+        "  console.log(`Servidor rodando em http://127.0.0.1:${PORT}`);\n"
+        "});\n"
+    )
+    index_html = (
+        "<!doctype html>\n"
+        "<html lang=\"pt-BR\">\n"
+        "<head>\n"
+        "  <meta charset=\"UTF-8\" />\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n"
+        "  <title>Hello World</title>\n"
+        "  <link rel=\"stylesheet\" href=\"style.css\" />\n"
+        "</head>\n"
+        "<body>\n"
+        "  <h1>Hello World</h1>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    style_css = "body { font-family: sans-serif; margin: 2rem; }\n"
+    env_content = (
+        f"DB_HOST=127.0.0.1\nDB_PORT=5432\nDB_NAME={db_name}\nDB_USER={db_owner}\nDB_PASSWORD={db_password}\n"
+    )
+
+    (project_dir / "server.js").write_text(server_js, encoding="utf-8")
+    (public_dir / "index.html").write_text(index_html, encoding="utf-8")
+    (public_dir / "style.css").write_text(style_css, encoding="utf-8")
+    (project_dir / ".env").write_text(env_content, encoding="utf-8")
+
+    run_command(["npm", "init", "-y"], workdir=str(project_dir))
+    run_command(["npm", "install", "express"], workdir=str(project_dir))
+    run_command(["sudo", "npm", "install", "-g", "pm2"])
+    run_command(["pm2", "start", "server.js", "--name", project_name], workdir=str(project_dir))
+    run_command(["pm2", "startup"])
+    run_command(["pm2", "save"])
+
+    configure_nginx_proxy(port)
+    setup_postgres_db(db_owner, db_password, db_name)
+
+    print("\nProjeto configurado com sucesso:")
+    print(f"- Pasta do projeto: {project_dir}")
+    print("- Pagina principal: public/index.html")
+    print("- CSS principal: public/style.css")
+    print(f"- Servidor Node: server.js rodando em 127.0.0.1:{port} (via PM2)")
+    print(f"- Banco de dados: {db_name}")
+    print(f"- Dono do banco: {db_owner}")
+    print(f"- Senha do banco: {db_password}")
+    print(f"- Arquivo de ambiente: {project_dir / '.env'}")
+
+
 def create_paperkey_template(template_path):
     if os.path.exists(template_path):
         return
@@ -1452,6 +1674,7 @@ def build_parser():
     subparsers.add_parser("zip", help="Menu de automacao de compactacao/extracao.")
     subparsers.add_parser("ssh", help="Menu de automacao para chaves SSH.")
     subparsers.add_parser("docker", help="Menu de automacao para containers Docker.")
+    subparsers.add_parser("website", help="Bootstrap de projeto website com Node, Nginx e PostgreSQL.")
 
     return parser
 
@@ -1480,6 +1703,9 @@ def run_cli(args):
         return 0
     if args.command == "docker":
         docker_menu_flow()
+        return 0
+    if args.command == "website":
+        website_flow()
         return 0
 
     interactive_menu()
