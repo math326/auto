@@ -31,7 +31,11 @@ Em resumo: a ferramenta centraliza fluxos repetitivos em um menu único, reduz c
 COMO INSTALAR:
 
 git clone https://github.com/math326/auto.git
+
 cd auto
+
 sudo bash install.sh
+
 source ~/.bashrc
+
 auto --help
