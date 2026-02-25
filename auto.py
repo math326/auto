@@ -248,11 +248,23 @@ def nmap_scan_flow():
 
 
 def prompt_existing_path(label):
-    value = os.path.expanduser(input_with_prompt(label).strip())
-    if not value or not os.path.exists(value):
+    raw_value = input_with_prompt(label).strip()
+    if not raw_value:
         print("Arquivo/pasta invalido(a).")
         return None
-    return value
+
+    expanded_value = os.path.expanduser(raw_value)
+    candidates = [expanded_value]
+    if not os.path.isabs(expanded_value):
+        candidates.append(str(Path.home() / expanded_value))
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    print(f"Arquivo/pasta invalido(a): {raw_value}")
+    print("Dica: use caminho completo ou verifique se o arquivo/pasta existe.")
+    return None
 
 
 def prompt_output_path(label):
