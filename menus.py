@@ -136,3 +136,13 @@ def show_docker_menu():
     print("6) Apagar container")
     print("0) Voltar")
     return _read_choice({"0", "1", "2", "3", "4", "5", "6"})
+
+
+def show_website_menu():
+    print("\nWEBSITE:")
+    print("1) Criar novo projeto de site")
+    print("2) Colocar site antigo de volta na porta 80")
+    print("3) Criar projeto de site onion")
+    print("4) Trocar porta do site onion")
+    print("0) Voltar")
+    return _read_choice({"0", "1", "2", "3", "4"})

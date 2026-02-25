@@ -7,12 +7,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from menus import show_docker_menu, show_kleopatra_menu, show_main_menu, show_nmap_menu, show_zip_menu
+from menus import show_docker_menu, show_kleopatra_menu, show_main_menu, show_nmap_menu, show_website_menu, show_zip_menu
 from menus import show_ssh_menu
 from utils import clear_screen, input_with_prompt, print_header, wait_for_enter
 
 DOCKER_USE_SUDO = False
 APT_UPDATED = False
+NGINX_WEBSITES_DIR = "/etc/nginx/auto-websites"
+NGINX_ACTIVE_WEBSITE_CONF = "/etc/nginx/conf.d/auto_website.conf"
 
 NMAP_COMMAND_TEMPLATES = {
     "1": ["nmap", "-sn", "{target_net}"],
@@ -894,29 +896,32 @@ def docker_menu_flow():
         wait_for_enter()
 
 
-def ensure_website_dependencies():
+def ensure_service_enabled_started(service_names):
+    for name in service_names:
+        if run_command(["sudo", "systemctl", "enable", "--now", name]) is not None:
+            run_command(["sudo", "systemctl", "start", name])
+            return True
+    return False
+
+
+def ensure_website_dependencies(include_nginx=True, include_tor=False):
     package_manager = detect_package_manager()
+    apt_packages = ["nodejs", "npm", "postgresql", "postgresql-contrib"]
+    pacman_packages = ["nodejs", "npm", "postgresql"]
+    if include_nginx:
+        apt_packages.append("nginx")
+        pacman_packages.append("nginx")
+    if include_tor:
+        apt_packages.append("tor")
+        pacman_packages.append("tor")
+
     if package_manager == "apt":
         if run_command(["sudo", "apt", "update"]) is None:
             return False
-        if run_command(
-            [
-                "sudo",
-                "apt",
-                "install",
-                "-y",
-                "nodejs",
-                "npm",
-                "nginx",
-                "postgresql",
-                "postgresql-contrib",
-            ]
-        ) is None:
+        if run_command(["sudo", "apt", "install", "-y"] + apt_packages) is None:
             return False
     elif package_manager == "pacman":
-        if run_command(
-            ["sudo", "pacman", "-S", "--noconfirm", "nodejs", "npm", "nginx", "postgresql"]
-        ) is None:
+        if run_command(["sudo", "pacman", "-S", "--noconfirm"] + pacman_packages) is None:
             return False
     else:
         print("Gerenciador de pacotes nao suportado automaticamente.")
@@ -926,10 +931,12 @@ def ensure_website_dependencies():
     if package_manager == "pacman" and not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
         run_command(["sudo", "-iu", "postgres", "initdb", "-D", "/var/lib/postgres/data"])
 
-    run_command(["sudo", "systemctl", "enable", "--now", "postgresql"])
-    run_command(["sudo", "systemctl", "start", "postgresql"])
-    run_command(["sudo", "systemctl", "enable", "--now", "nginx"])
-    run_command(["sudo", "systemctl", "start", "nginx"])
+    if not ensure_service_enabled_started(["postgresql", "postgresql.service"]):
+        return False
+    if include_nginx and not ensure_service_enabled_started(["nginx", "nginx.service"]):
+        return False
+    if include_tor and not ensure_service_enabled_started(["tor", "tor.service"]):
+        return False
     return True
 
 
@@ -957,7 +964,24 @@ def validate_port_or_none(raw):
     return port
 
 
-def configure_nginx_proxy(port):
+def build_nginx_proxy_conf(port):
+    return (
+        "server {\n"
+        "    listen 80;\n"
+        "    server_name _;\n\n"
+        "    location / {\n"
+        f"        proxy_pass http://127.0.0.1:{port};\n"
+        "        proxy_http_version 1.1;\n\n"
+        "        proxy_set_header Upgrade $http_upgrade;\n"
+        "        proxy_set_header Connection 'upgrade';\n"
+        "        proxy_set_header Host $host;\n"
+        "        proxy_cache_bypass $http_upgrade;\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def configure_nginx_proxy(port, profile_name):
     run_command(["sudo", "grep", "-R", "listen 80", "-n", "/etc/nginx"])
 
     # Se algo estiver ocupando 80, tenta liberar para o Nginx.
@@ -975,28 +999,31 @@ def configure_nginx_proxy(port):
 
     # Evita conflito com site padrao em Debian/Ubuntu.
     if os.path.exists("/etc/nginx/sites-enabled/default"):
-        run_command(
-            ["sudo", "mv", "/etc/nginx/sites-enabled/default", "/etc/nginx/sites-enabled/default.bak"]
+        default_real = subprocess.run(
+            ["readlink", "-f", "/etc/nginx/sites-enabled/default"],
+            check=False,
+            capture_output=True,
+            text=True,
         )
+        run_command(["sudo", "rm", "-f", "/etc/nginx/sites-enabled/default"])
+        if default_real.returncode == 0 and default_real.stdout.strip():
+            real_path = default_real.stdout.strip()
+            if os.path.exists(real_path):
+                run_command(["sudo", "cp", real_path, f"{real_path}.bak"])
 
-    conf_content = (
-        "server {\n"
-        "    listen 80;\n"
-        "    server_name _;\n\n"
-        "    location / {\n"
-        f"        proxy_pass http://127.0.0.1:{port};\n"
-        "        proxy_http_version 1.1;\n\n"
-        "        proxy_set_header Upgrade $http_upgrade;\n"
-        "        proxy_set_header Connection 'upgrade';\n"
-        "        proxy_set_header Host $host;\n"
-        "        proxy_cache_bypass $http_upgrade;\n"
-        "    }\n"
-        "}\n"
-    )
-    tmp_conf = "/tmp/auto_website_nginx.conf"
+    conf_content = build_nginx_proxy_conf(port)
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", profile_name.strip()) or "site"
+    tmp_conf = f"/tmp/auto_website_{safe_name}.conf"
+    profile_path = f"{NGINX_WEBSITES_DIR}/{safe_name}.conf"
+
     with open(tmp_conf, "w", encoding="utf-8") as file:
         file.write(conf_content)
-    if run_command(["sudo", "cp", tmp_conf, "/etc/nginx/conf.d/auto_website.conf"]) is None:
+
+    if run_command(["sudo", "mkdir", "-p", NGINX_WEBSITES_DIR]) is None:
+        return False
+    if run_command(["sudo", "cp", tmp_conf, profile_path]) is None:
+        return False
+    if run_command(["sudo", "cp", profile_path, NGINX_ACTIVE_WEBSITE_CONF]) is None:
         return False
     if run_command(["sudo", "nginx", "-t"]) is None:
         return False
@@ -1076,9 +1103,54 @@ def setup_pm2_startup():
     )
 
 
-def website_flow():
+def configure_tor_hidden_service(port):
+    torrc_path = "/etc/tor/torrc"
+    hostname_path = "/var/lib/tor/hidden_service/hostname"
+    hidden_dir = "/var/lib/tor/hidden_service/"
+    hidden_port_line = f"HiddenServicePort 80 127.0.0.1:{port}"
+
+    content = ""
+    try:
+        with open(torrc_path, "r", encoding="utf-8") as file:
+            content = file.read()
+    except Exception:
+        cat_result = run_command(["sudo", "cat", torrc_path], capture_output=True)
+        if not cat_result:
+            return False
+        content = cat_result.stdout
+
+    filtered_lines = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("HiddenServiceDir ") or stripped.startswith("HiddenServicePort "):
+            continue
+        filtered_lines.append(line)
+
+    filtered_lines.append("")
+    filtered_lines.append(f"HiddenServiceDir {hidden_dir}")
+    filtered_lines.append(hidden_port_line)
+    new_content = "\n".join(filtered_lines).rstrip() + "\n"
+
+    tmp_torrc = "/tmp/auto_torrc"
+    with open(tmp_torrc, "w", encoding="utf-8") as file:
+        file.write(new_content)
+
+    if run_command(["sudo", "cp", tmp_torrc, torrc_path]) is None:
+        return False
+    if not ensure_service_enabled_started(["tor", "tor.service"]):
+        return False
+
+    hostname_result = run_command(["sudo", "cat", hostname_path], capture_output=True)
+    if hostname_result and hostname_result.stdout.strip():
+        print(f"\nEndereco onion: {hostname_result.stdout.strip()}")
+    else:
+        print("Nao foi possivel ler hostname onion automaticamente.")
+    return True
+
+
+def create_website_project_flow(use_onion=False):
     print_header("Auto - Website")
-    if not ensure_website_dependencies():
+    if not ensure_website_dependencies(include_nginx=not use_onion, include_tor=use_onion):
         print("Falha ao preparar dependencias de website.")
         return
 
@@ -1165,9 +1237,14 @@ def website_flow():
     if run_command(["pm2", "save"]) is None:
         return
 
-    if not configure_nginx_proxy(port):
-        print("Falha ao configurar Nginx.")
-        return
+    if use_onion:
+        if not configure_tor_hidden_service(port):
+            print("Falha ao configurar servico onion (Tor).")
+            return
+    else:
+        if not configure_nginx_proxy(port, project_name):
+            print("Falha ao configurar Nginx.")
+            return
     if not setup_postgres_db(db_owner, db_password, db_name):
         print("Falha ao configurar usuario/banco no PostgreSQL.")
         return
@@ -1177,10 +1254,97 @@ def website_flow():
     print("- Pagina principal: public/index.html")
     print("- CSS principal: public/style.css")
     print(f"- Servidor Node: server.js rodando em 127.0.0.1:{port} (via PM2)")
+    if use_onion:
+        print("- Exposicao onion configurada via Tor em HiddenServicePort 80.")
+    else:
+        print("- Exposicao web configurada em porta 80 via Nginx.")
     print(f"- Banco de dados: {db_name}")
     print(f"- Dono do banco: {db_owner}")
     print(f"- Senha do banco: {db_password}")
     print(f"- Arquivo de ambiente: {project_dir / '.env'}")
+
+
+def list_saved_website_profiles():
+    result = run_command(
+        ["bash", "-lc", f"ls {NGINX_WEBSITES_DIR}/*.conf 2>/dev/null || true"],
+        capture_output=True,
+    )
+    if not result or not result.stdout.strip():
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def activate_old_website_flow():
+    print_header("Website - Restaurar Site Antigo")
+    profiles = list_saved_website_profiles()
+    if not profiles:
+        print("Nenhum site salvo encontrado para restaurar.")
+        return
+
+    print("\nSITES SALVOS:")
+    for idx, path in enumerate(profiles, start=1):
+        name = os.path.basename(path).removesuffix(".conf")
+        print(f"{idx}) {name}")
+
+    choice = input_with_prompt("Escolha o numero do site para colocar na porta 80: ").strip()
+    if not choice.isdigit():
+        print("Opcao invalida.")
+        return
+    index = int(choice)
+    if index < 1 or index > len(profiles):
+        print("Opcao invalida.")
+        return
+
+    selected_profile = profiles[index - 1]
+    if run_command(["sudo", "cp", selected_profile, NGINX_ACTIVE_WEBSITE_CONF]) is None:
+        print("Falha ao ativar o perfil selecionado.")
+        return
+    if run_command(["sudo", "nginx", "-t"]) is None:
+        print("Falha na validacao do Nginx.")
+        return
+    if run_command(["sudo", "systemctl", "restart", "nginx"]) is None:
+        print("Falha ao reiniciar Nginx.")
+        return
+
+    selected_name = os.path.basename(selected_profile).removesuffix(".conf")
+    print(f"Site '{selected_name}' foi colocado na porta 80 com sucesso.")
+
+
+def update_onion_port_flow():
+    print_header("Website - Trocar Porta Onion")
+    if not ensure_website_dependencies(include_nginx=False, include_tor=True):
+        print("Falha ao preparar Tor/servicos para onion.")
+        return
+
+    port = None
+    while port is None:
+        raw_port = input_with_prompt("Porta localhost atual do site para onion (>1024): ").strip()
+        port = validate_port_or_none(raw_port)
+        if port is None:
+            print("Porta invalida. Use um numero entre 1025 e 65535.")
+
+    if not configure_tor_hidden_service(port):
+        print("Falha ao atualizar configuracao onion.")
+        return
+    print(f"Porta onion atualizada para encaminhar 80 -> 127.0.0.1:{port}.")
+
+
+def website_flow():
+    while True:
+        clear_screen()
+        print_header("Auto - Website")
+        option = show_website_menu()
+        if option == "0":
+            return
+        if option == "1":
+            create_website_project_flow(use_onion=False)
+        elif option == "2":
+            activate_old_website_flow()
+        elif option == "3":
+            create_website_project_flow(use_onion=True)
+        elif option == "4":
+            update_onion_port_flow()
+        wait_for_enter()
 
 
 def create_paperkey_template(template_path):
