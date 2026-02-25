@@ -722,9 +722,11 @@ def ensure_docker_ready():
 
 
 def run_container_setup_commands(container_id):
-    run_command(docker_command(["start", container_id]))
-    run_command(docker_command(["exec", container_id, "bash", "-lc", "apt update"]))
-    run_command(
+    if run_command(docker_command(["start", container_id])) is None:
+        return False
+    if run_command(docker_command(["exec", container_id, "bash", "-lc", "apt update"])) is None:
+        return False
+    if run_command(
         docker_command(
             [
                 "exec",
@@ -734,18 +736,24 @@ def run_container_setup_commands(container_id):
                 f"apt install -y {CONTAINER_APT_PACKAGES}",
             ]
         )
-    )
+    ) is None:
+        return False
+    return True
 
 
 def create_basic_container(image_name):
-    run_command(docker_command(["pull", image_name]))
+    if run_command(docker_command(["pull", image_name])) is None:
+        return
+
     created = run_command(docker_command(["run", "-dit", image_name, "bash"]), capture_output=True)
     if not created or not created.stdout.strip():
         print("Nao foi possivel criar o container.")
         return
     container_id = created.stdout.strip()
     run_command(docker_command(["ps", "-a"]))
-    run_container_setup_commands(container_id)
+    if not run_container_setup_commands(container_id):
+        print("Falha ao configurar dependencias dentro do container.")
+        return
     print(f"\nContainer pronto. ID: {container_id}")
     print(f"Para entrar agora: docker start -ai {container_id}")
 
@@ -765,7 +773,7 @@ def create_password_container(base_image):
         f"FROM {base_image}\n\n"
         "ENV DEBIAN_FRONTEND=noninteractive\n\n"
         "RUN apt-get update && apt-get install -y openssh-server sudo\n"
-        "RUN mkdir /var/run/sshd\n"
+        "RUN mkdir -p /var/run/sshd\n"
         f'RUN useradd -m aluno && echo "aluno:{safe_password}" | chpasswd\n'
         "RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config\n"
         "RUN sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config\n"
@@ -783,9 +791,15 @@ def create_password_container(base_image):
     ).strip() or container_name_default
     port = input_with_prompt("Porta local para SSH (padrao: 2222): ").strip() or "2222"
 
-    run_command(docker_command(["build", "-t", image_tag, "."]), workdir=str(project_dir))
-    run_command(docker_command(["run", "-d", "-p", f"{port}:22", "--name", container_name, image_tag]))
-    run_container_setup_commands(container_name)
+    if run_command(docker_command(["build", "-t", image_tag, "."]), workdir=str(project_dir)) is None:
+        print("Falha no build da imagem Docker. Corrija o erro e tente novamente.")
+        return
+    if run_command(docker_command(["run", "-d", "-p", f"{port}:22", "--name", container_name, image_tag])) is None:
+        print("Falha ao criar/executar o container com SSH.")
+        return
+    if not run_container_setup_commands(container_name):
+        print("Falha ao instalar dependencias dentro do container.")
+        return
     print(f"\nContainer com SSH pronto. Use: ssh aluno@127.0.0.1 -p {port}")
 
 
