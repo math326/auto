@@ -11,6 +11,8 @@ from menus import show_docker_menu, show_kleopatra_menu, show_main_menu, show_nm
 from menus import show_ssh_menu
 from utils import clear_screen, input_with_prompt, print_header, wait_for_enter
 
+DOCKER_USE_SUDO = False
+
 NMAP_COMMAND_TEMPLATES = {
     "1": ["nmap", "-sn", "{target_net}"],
     "2": ["nmap", "-sn", "{target_net}"],
@@ -89,6 +91,12 @@ def ensure_sudo_for_nmap(command):
     if command and command[0] == "nmap":
         return ["sudo"] + command
     return command
+
+
+def docker_command(args):
+    if DOCKER_USE_SUDO:
+        return ["sudo", "docker"] + args
+    return ["docker"] + args
 
 
 def ensure_tool_exists(tool):
@@ -660,6 +668,7 @@ def has_docker_compose():
 
 
 def ensure_docker_ready():
+    global DOCKER_USE_SUDO
     package_manager = detect_package_manager()
     docker_installed = ensure_tool_exists("docker")
     compose_installed = has_docker_compose()
@@ -692,32 +701,50 @@ def ensure_docker_ready():
             return False
     else:
         print("Servico Docker ja esta ativo.")
+
+    docker_info = subprocess.run(
+        ["docker", "info"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if docker_info.returncode != 0:
+        stderr = (docker_info.stderr or "").lower()
+        if "permission denied" in stderr or "docker.sock" in stderr:
+            DOCKER_USE_SUDO = True
+            print("Sem permissao no docker.sock. Usando sudo nos comandos Docker.")
+        else:
+            print("Docker instalado, mas nao foi possivel acessar o daemon.")
+            if docker_info.stderr:
+                print(docker_info.stderr.strip())
+            return False
     return True
 
 
 def run_container_setup_commands(container_id):
-    run_command(["docker", "start", container_id])
-    run_command(["docker", "exec", container_id, "bash", "-lc", "apt update"])
+    run_command(docker_command(["start", container_id]))
+    run_command(docker_command(["exec", container_id, "bash", "-lc", "apt update"]))
     run_command(
-        [
-            "docker",
-            "exec",
-            container_id,
-            "bash",
-            "-lc",
-            f"apt install -y {CONTAINER_APT_PACKAGES}",
-        ]
+        docker_command(
+            [
+                "exec",
+                container_id,
+                "bash",
+                "-lc",
+                f"apt install -y {CONTAINER_APT_PACKAGES}",
+            ]
+        )
     )
 
 
 def create_basic_container(image_name):
-    run_command(["docker", "pull", image_name])
-    created = run_command(["docker", "run", "-dit", image_name, "bash"], capture_output=True)
+    run_command(docker_command(["pull", image_name]))
+    created = run_command(docker_command(["run", "-dit", image_name, "bash"]), capture_output=True)
     if not created or not created.stdout.strip():
         print("Nao foi possivel criar o container.")
         return
     container_id = created.stdout.strip()
-    run_command(["docker", "ps", "-a"])
+    run_command(docker_command(["ps", "-a"]))
     run_container_setup_commands(container_id)
     print(f"\nContainer pronto. ID: {container_id}")
     print(f"Para entrar agora: docker start -ai {container_id}")
@@ -756,15 +783,15 @@ def create_password_container(base_image):
     ).strip() or container_name_default
     port = input_with_prompt("Porta local para SSH (padrao: 2222): ").strip() or "2222"
 
-    run_command(["docker", "build", "-t", image_tag, "."], workdir=str(project_dir))
-    run_command(["docker", "run", "-d", "-p", f"{port}:22", "--name", container_name, image_tag])
+    run_command(docker_command(["build", "-t", image_tag, "."]), workdir=str(project_dir))
+    run_command(docker_command(["run", "-d", "-p", f"{port}:22", "--name", container_name, image_tag]))
     run_container_setup_commands(container_name)
     print(f"\nContainer com SSH pronto. Use: ssh aluno@127.0.0.1 -p {port}")
 
 
 def list_containers():
     result = run_command(
-        ["docker", "ps", "-a", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}"],
+        docker_command(["ps", "-a", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}"]),
         capture_output=True,
     )
     if not result or not result.stdout.strip():
@@ -830,15 +857,15 @@ def docker_menu_flow():
         elif choice == "5":
             selected = select_container_from_list()
             if selected:
-                run_command(["docker", "start", "-ai", selected["id"]])
+                run_command(docker_command(["start", "-ai", selected["id"]]))
         elif choice == "6":
             selected = select_container_from_list()
             if selected:
                 status = selected.get("status", "").lower()
                 if status.startswith("up"):
-                    run_command(["docker", "rm", "-f", selected["id"]])
+                    run_command(docker_command(["rm", "-f", selected["id"]]))
                 else:
-                    run_command(["docker", "rm", selected["id"]])
+                    run_command(docker_command(["rm", selected["id"]]))
         wait_for_enter()
 
 
