@@ -23,3 +23,15 @@ auto website
 Bootstrap completo de projeto web com Node.js + Express + PM2 + PostgreSQL + Nginx (ou Tor Onion Service), criação de estrutura inicial (server.js, index.html, style.css, .env), configuração de proxy em porta 80, perfis de sites para alternância rápida no Nginx e suporte a publicação Onion.
 
 Em resumo: a ferramenta centraliza fluxos repetitivos em um menu único, reduz comandos manuais e padroniza setup/execução para quem trabalha com ambientes Linux.
+
+
+
+
+
+COMO INSTALAR:
+
+git clone https://github.com/math326/auto.git
+cd auto
+sudo bash install.sh
+source ~/.bashrc
+auto --help
