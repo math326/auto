@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORIGINAL_USER="${SUDO_USER:-$USER}"
+ORIGINAL_HOME="$(eval echo "~${ORIGINAL_USER}")"
+
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "Execute como root/sudo: sudo bash install.sh"
+  if command -v sudo >/dev/null 2>&1; then
+    echo "[*] Elevando privilegios com sudo..."
+    exec sudo -E bash "$0" "$@"
+  fi
+  echo "[!] Este script precisa de root/sudo."
   exit 1
 fi
-
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install_debian_like() {
   apt update
@@ -43,6 +49,20 @@ enable_service_if_exists() {
   return 1
 }
 
+ensure_user_local_bin_on_path() {
+  local bashrc="${ORIGINAL_HOME}/.bashrc"
+  local export_line='export PATH="$HOME/.local/bin:$PATH"'
+  mkdir -p "${ORIGINAL_HOME}/.local/bin"
+  if [[ -f "${bashrc}" ]]; then
+    if ! grep -Fq "${export_line}" "${bashrc}"; then
+      echo "${export_line}" >> "${bashrc}"
+    fi
+  else
+    echo "${export_line}" > "${bashrc}"
+  fi
+  chown -R "${ORIGINAL_USER}:${ORIGINAL_USER}" "${ORIGINAL_HOME}/.local"
+}
+
 if command -v apt >/dev/null 2>&1; then
   echo "[*] Detectado Debian/Ubuntu (apt)"
   install_debian_like
@@ -60,15 +80,26 @@ enable_service_if_exists "ssh.service" || enable_service_if_exists "sshd.service
 echo "[*] Ativando Docker..."
 enable_service_if_exists "docker.service" || true
 
-if [[ -n "${SUDO_USER:-}" ]] && id -u "${SUDO_USER}" >/dev/null 2>&1; then
-  usermod -aG docker "${SUDO_USER}" || true
-  echo "[*] Usuario ${SUDO_USER} adicionado ao grupo docker (se existir)."
+if id -u "${ORIGINAL_USER}" >/dev/null 2>&1; then
+  usermod -aG docker "${ORIGINAL_USER}" || true
+  echo "[*] Usuario ${ORIGINAL_USER} adicionado ao grupo docker (se existir)."
 fi
 
 chmod +x "${REPO_DIR}/auto"
 chmod +x "${REPO_DIR}/install.sh"
+if ln -sf "${REPO_DIR}/auto" /usr/local/bin/auto 2>/dev/null; then
+  echo "[*] Comando global criado em /usr/local/bin/auto"
+else
+  echo "[*] Nao foi possivel criar /usr/local/bin/auto; usando ~/.local/bin/auto"
+fi
+
+ensure_user_local_bin_on_path
+ln -sf "${REPO_DIR}/auto" "${ORIGINAL_HOME}/.local/bin/auto"
+chown -h "${ORIGINAL_USER}:${ORIGINAL_USER}" "${ORIGINAL_HOME}/.local/bin/auto"
 
 echo
 echo "[+] Instalacao concluida."
-echo "[+] Rode a ferramenta com: ${REPO_DIR}/auto --help"
-echo "[+] Se quiser usar Docker sem sudo, faça logout/login apos a instalacao."
+echo "[+] Rode a ferramenta com: auto --help"
+echo "[+] Ou usando caminho completo: ${REPO_DIR}/auto --help"
+echo "[+] Se o comando auto nao abrir agora, rode: source ~/.bashrc"
+echo "[+] Se quiser usar Docker sem sudo, faca logout/login apos a instalacao."
