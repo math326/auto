@@ -970,7 +970,14 @@ def configure_nginx_proxy(port):
     if check_80.stdout and "LISTEN" in check_80.stdout:
         run_command(["sudo", "fuser", "-k", "80/tcp"])
 
-    run_command(["sudo", "mv", "/etc/nginx/conf.d/youhost.conf", "/etc/nginx/conf.d/youhost.conf.bak"])
+    if os.path.exists("/etc/nginx/conf.d/youhost.conf"):
+        run_command(["sudo", "mv", "/etc/nginx/conf.d/youhost.conf", "/etc/nginx/conf.d/youhost.conf.bak"])
+
+    # Evita conflito com site padrao em Debian/Ubuntu.
+    if os.path.exists("/etc/nginx/sites-enabled/default"):
+        run_command(
+            ["sudo", "mv", "/etc/nginx/sites-enabled/default", "/etc/nginx/sites-enabled/default.bak"]
+        )
 
     conf_content = (
         "server {\n"
@@ -989,14 +996,18 @@ def configure_nginx_proxy(port):
     tmp_conf = "/tmp/auto_website_nginx.conf"
     with open(tmp_conf, "w", encoding="utf-8") as file:
         file.write(conf_content)
-    run_command(["sudo", "cp", tmp_conf, "/etc/nginx/conf.d/auto_website.conf"])
-    run_command(["sudo", "nginx", "-t"])
-    run_command(["sudo", "systemctl", "restart", "nginx"])
+    if run_command(["sudo", "cp", tmp_conf, "/etc/nginx/conf.d/auto_website.conf"]) is None:
+        return False
+    if run_command(["sudo", "nginx", "-t"]) is None:
+        return False
+    if run_command(["sudo", "systemctl", "restart", "nginx"]) is None:
+        return False
+    return True
 
 
 def setup_postgres_db(db_user, db_password, db_name):
     password_sql = sql_literal(db_password)
-    run_command(
+    if run_command(
         [
             "sudo",
             "-u",
@@ -1006,17 +1017,62 @@ def setup_postgres_db(db_user, db_password, db_name):
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{db_user}') "
             f"THEN CREATE ROLE {db_user} LOGIN PASSWORD '{password_sql}'; END IF; END $$;",
         ]
-    )
-    run_command(
+    ) is None:
+        return False
+
+    db_exists = subprocess.run(
         [
             "sudo",
             "-u",
             "postgres",
             "psql",
-            "-c",
-            f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '{db_name}') "
-            f"THEN CREATE DATABASE {db_name} OWNER {db_user}; END IF; END $$;",
-        ]
+            "-tAc",
+            f"SELECT 1 FROM pg_database WHERE datname='{db_name}'",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if db_exists.returncode != 0:
+        return False
+    if db_exists.stdout.strip() != "1":
+        if run_command(
+            [
+                "sudo",
+                "-u",
+                "postgres",
+                "psql",
+                "-c",
+                f"CREATE DATABASE {db_name} OWNER {db_user};",
+            ]
+        ) is None:
+            return False
+    return True
+
+
+def setup_pm2_startup():
+    if run_command(["pm2", "startup"]) is not None:
+        return True
+
+    user = os.environ.get("USER", "")
+    home = os.path.expanduser("~")
+    path_value = os.environ.get("PATH", "")
+    return (
+        run_command(
+            [
+                "sudo",
+                "env",
+                f"PATH={path_value}",
+                "pm2",
+                "startup",
+                "systemd",
+                "-u",
+                user,
+                "--hp",
+                home,
+            ]
+        )
+        is not None
     )
 
 
@@ -1095,15 +1151,26 @@ def website_flow():
     (public_dir / "style.css").write_text(style_css, encoding="utf-8")
     (project_dir / ".env").write_text(env_content, encoding="utf-8")
 
-    run_command(["npm", "init", "-y"], workdir=str(project_dir))
-    run_command(["npm", "install", "express"], workdir=str(project_dir))
-    run_command(["sudo", "npm", "install", "-g", "pm2"])
-    run_command(["pm2", "start", "server.js", "--name", project_name], workdir=str(project_dir))
-    run_command(["pm2", "startup"])
-    run_command(["pm2", "save"])
+    if run_command(["npm", "init", "-y"], workdir=str(project_dir)) is None:
+        return
+    if run_command(["npm", "install", "express"], workdir=str(project_dir)) is None:
+        return
+    if run_command(["sudo", "npm", "install", "-g", "pm2"]) is None:
+        return
+    if run_command(["pm2", "start", "server.js", "--name", project_name], workdir=str(project_dir)) is None:
+        return
+    if not setup_pm2_startup():
+        print("Falha ao configurar startup do PM2.")
+        return
+    if run_command(["pm2", "save"]) is None:
+        return
 
-    configure_nginx_proxy(port)
-    setup_postgres_db(db_owner, db_password, db_name)
+    if not configure_nginx_proxy(port):
+        print("Falha ao configurar Nginx.")
+        return
+    if not setup_postgres_db(db_owner, db_password, db_name):
+        print("Falha ao configurar usuario/banco no PostgreSQL.")
+        return
 
     print("\nProjeto configurado com sucesso:")
     print(f"- Pasta do projeto: {project_dir}")
