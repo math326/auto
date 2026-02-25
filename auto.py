@@ -199,11 +199,11 @@ def _resolve_nmap_template_tokens(template):
     needs_net = "{target_net}" in template
 
     if needs_file:
-        input_file = os.path.expanduser(
-            input_with_prompt("Nome/caminho do arquivo de IPs (ex: ips.txt): ").strip()
-        )
-        if not input_file or not os.path.exists(input_file):
-            print("Arquivo de IPs invalido.")
+        raw_input_file = input_with_prompt("Nome/caminho do arquivo de IPs (ex: ips.txt): ").strip()
+        input_file = resolve_existing_path(raw_input_file)
+        if not input_file:
+            print(f"Arquivo de IPs invalido: {raw_input_file}")
+            print("Dica: use caminho completo ou verifique se o arquivo existe.")
             return None
         values["{input_file}"] = input_file
 
@@ -247,21 +247,24 @@ def nmap_scan_flow():
     run_command(ensure_sudo_for_nmap(command))
 
 
-def prompt_existing_path(label):
-    raw_value = input_with_prompt(label).strip()
+def resolve_existing_path(raw_value):
     if not raw_value:
-        print("Arquivo/pasta invalido(a).")
         return None
-
     expanded_value = os.path.expanduser(raw_value)
     candidates = [expanded_value]
     if not os.path.isabs(expanded_value):
         candidates.append(str(Path.home() / expanded_value))
-
     for candidate in candidates:
         if os.path.exists(candidate):
             return candidate
+    return None
 
+
+def prompt_existing_path(label):
+    raw_value = input_with_prompt(label).strip()
+    resolved_path = resolve_existing_path(raw_value)
+    if resolved_path:
+        return resolved_path
     print(f"Arquivo/pasta invalido(a): {raw_value}")
     print("Dica: use caminho completo ou verifique se o arquivo/pasta existe.")
     return None
@@ -357,10 +360,23 @@ def execute_zip_option(choice):
             run_command(["zip", "-r", zip_out, folder])
     elif choice == "6":
         zip_out = prompt_output_path("Nome do .zip de saida (ex: protegido.zip): ")
-        input_path = prompt_existing_path("Arquivo/pasta para zipar com senha: ")
-        if not zip_out or not input_path:
+        if not zip_out:
             return
         zip_out = ensure_file_extension(zip_out, ".zip")
+        raw_input_path = input_with_prompt("Arquivo/pasta para zipar com senha: ").strip()
+        input_path = resolve_existing_path(raw_input_path)
+        if not input_path:
+            zip_base = zip_out[:-4] if zip_out.lower().endswith(".zip") else zip_out
+            input_path = resolve_existing_path(zip_base)
+            if input_path:
+                print(
+                    f"Arquivo/pasta '{raw_input_path}' nao encontrado. "
+                    f"Usando automaticamente: {input_path}"
+                )
+        if not input_path:
+            print(f"Arquivo/pasta invalido(a): {raw_input_path}")
+            print("Dica: use caminho completo ou verifique se o arquivo/pasta existe.")
+            return
         password = getpass.getpass("Digite a senha do .zip: ").strip()
         if not password:
             print("Senha invalida.")
@@ -1591,21 +1607,21 @@ def list_public_key_emails():
 
 
 def import_public_key_file():
-    key_path = os.path.expanduser(
-        input_with_prompt("Caminho da chave publica (.asc/.gpg) para importar: ").strip()
-    )
-    if not key_path or not os.path.exists(key_path):
-        print("Arquivo de chave publica invalido.")
+    raw_key_path = input_with_prompt("Caminho da chave publica (.asc/.gpg) para importar: ").strip()
+    key_path = resolve_existing_path(raw_key_path)
+    if not key_path:
+        print(f"Arquivo de chave publica invalido: {raw_key_path}")
+        print("Dica: use caminho completo ou verifique se o arquivo existe.")
         return False
     return run_command(["gpg", "--import", key_path]) is not None
 
 
 def import_private_key_file():
-    key_path = os.path.expanduser(
-        input_with_prompt("Caminho da chave privada (.asc/.gpg) para importar: ").strip()
-    )
-    if not key_path or not os.path.exists(key_path):
-        print("Arquivo de chave privada invalido.")
+    raw_key_path = input_with_prompt("Caminho da chave privada (.asc/.gpg) para importar: ").strip()
+    key_path = resolve_existing_path(raw_key_path)
+    if not key_path:
+        print(f"Arquivo de chave privada invalido: {raw_key_path}")
+        print("Dica: use caminho completo ou verifique se o arquivo existe.")
         return False
     return run_command(["gpg", "--import", key_path]) is not None
 
@@ -1774,9 +1790,10 @@ def reconstruct_private_key_kleopatra_flow():
     print(f"Pasta preparada: {recover_dir}")
 
     key_name = input_with_prompt("Nome/caminho da chave publica (ex: math.asc): ").strip()
-    key_path = os.path.expanduser(key_name)
-    if not os.path.exists(key_path):
-        print("Arquivo de chave publica nao encontrado.")
+    key_path = resolve_existing_path(key_name)
+    if not key_path:
+        print(f"Arquivo de chave publica nao encontrado: {key_name}")
+        print("Dica: use caminho completo ou verifique se o arquivo existe.")
         return
 
     run_command(["gpg", "--homedir", recover_dir, "--import", key_path])
@@ -1890,9 +1907,11 @@ def encrypt_file_flow():
     if not recipient:
         return
 
-    file_path = os.path.expanduser(input_with_prompt("Nome/caminho do arquivo (ex: mensagem.txt): ").strip())
-    if not os.path.exists(file_path):
-        print("Arquivo invalido.")
+    raw_file_path = input_with_prompt("Nome/caminho do arquivo (ex: mensagem.txt): ").strip()
+    file_path = resolve_existing_path(raw_file_path)
+    if not file_path:
+        print(f"Arquivo invalido: {raw_file_path}")
+        print("Dica: use caminho completo ou verifique se o arquivo existe.")
         return
     run_command(["gpg", "--encrypt", "--recipient", recipient, file_path])
 
@@ -1902,13 +1921,13 @@ def decrypt_file_flow():
     if not ensure_tool_exists("gpg"):
         return
 
-    file_path = os.path.expanduser(
-        input_with_prompt(
-            "Nome/caminho do arquivo criptografado (ex: arquivo.txt.gpg): "
-        ).strip()
-    )
-    if not os.path.exists(file_path):
-        print("Arquivo invalido.")
+    raw_file_path = input_with_prompt(
+        "Nome/caminho do arquivo criptografado (ex: arquivo.txt.gpg): "
+    ).strip()
+    file_path = resolve_existing_path(raw_file_path)
+    if not file_path:
+        print(f"Arquivo invalido: {raw_file_path}")
+        print("Dica: use caminho completo ou verifique se o arquivo existe.")
         return
 
     run_command(["gpg", "--decrypt", file_path])
