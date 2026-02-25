@@ -12,6 +12,7 @@ from menus import show_ssh_menu
 from utils import clear_screen, input_with_prompt, print_header, wait_for_enter
 
 DOCKER_USE_SUDO = False
+APT_UPDATED = False
 
 NMAP_COMMAND_TEMPLATES = {
     "1": ["nmap", "-sn", "{target_net}"],
@@ -115,10 +116,15 @@ def detect_package_manager():
 
 
 def install_package(package_name):
+    global APT_UPDATED
     package_manager = detect_package_manager()
     if package_manager == "pacman":
         return run_command(["sudo", "pacman", "-S", "--noconfirm", package_name])
     if package_manager == "apt":
+        if not APT_UPDATED:
+            if run_command(["sudo", "apt", "update"]) is None:
+                return None
+            APT_UPDATED = True
         return run_command(["sudo", "apt", "install", package_name, "-y"])
     print("Gerenciador de pacotes nao suportado automaticamente.")
     return None
@@ -1172,6 +1178,10 @@ def reconstruct_private_key_kleopatra_flow():
 def kleopatra_menu_flow():
     if not ensure_or_install_tool("kleopatra", "kleopatra"):
         print("Nao foi possivel validar/instalar Kleopatra.")
+        wait_for_enter()
+        return
+    if not ensure_or_install_tool("gpg", "gnupg"):
+        print("Nao foi possivel validar/instalar GnuPG.")
         wait_for_enter()
         return
 
