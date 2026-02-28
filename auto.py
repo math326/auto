@@ -1589,31 +1589,43 @@ def collect_paperkey_lines():
     return lines
 
 
-def list_public_key_emails():
+def list_public_key_recipients():
     result = run_command(["gpg", "--list-keys", "--with-colons"], capture_output=True)
     if not result or not result.stdout:
         return []
 
-    emails = []
+    recipients = []
     seen = set()
+    current_fingerprint = None
     for line in result.stdout.splitlines():
-        if not line.startswith("uid:"):
+        if line.startswith("pub:"):
+            current_fingerprint = None
             continue
+
         parts = line.split(":")
         if len(parts) < 10:
             continue
-        uid_text = parts[9]
-        match = re.search(r"<([^>]+)>", uid_text)
-        if match:
-            email = match.group(1).strip()
-        else:
-            email = uid_text.strip()
-        if "@" not in email:
+
+        if parts[0] == "fpr" and not current_fingerprint:
+            current_fingerprint = parts[9].strip()
             continue
-        if email not in seen:
-            seen.add(email)
-            emails.append(email)
-    return emails
+
+        if parts[0] != "uid" or not current_fingerprint:
+            continue
+
+        uid_text = parts[9].strip()
+        name = re.sub(r"\s*<[^>]+>\s*", "", uid_text).strip()
+        if not name:
+            name = uid_text
+        if not name:
+            continue
+
+        key = (name, current_fingerprint)
+        if key not in seen:
+            seen.add(key)
+            recipients.append({"name": name, "recipient": current_fingerprint})
+
+    return recipients
 
 
 def import_public_key_file():
@@ -1718,45 +1730,45 @@ def generate_gpg_keypair():
     return run_command(["gpg", "--full-generate-key"]) is not None
 
 
-def choose_recipient_email():
-    emails = list_public_key_emails()
-    if not emails:
-        print("Nenhuma chave publica com email foi encontrada no GPG/Kleopatra.")
+def choose_recipient_key():
+    recipients = list_public_key_recipients()
+    if not recipients:
+        print("Nenhuma chave publica foi encontrada no GPG/Kleopatra.")
         print("1) Importar chave publica agora")
         print("2) Gerar novo par de chaves agora")
         print("0) Voltar")
         action = input_with_prompt("Escolha: ").strip()
         if action == "1":
             if import_public_key_file():
-                emails = list_public_key_emails()
-                if not emails:
-                    print("Ainda nao ha chaves publicas com email apos a importacao.")
+                recipients = list_public_key_recipients()
+                if not recipients:
+                    print("Ainda nao ha chaves publicas apos a importacao.")
                     return None
             else:
                 return None
         elif action == "2":
             if generate_gpg_keypair():
-                emails = list_public_key_emails()
-                if not emails:
-                    print("Ainda nao ha chaves publicas com email apos gerar as chaves.")
+                recipients = list_public_key_recipients()
+                if not recipients:
+                    print("Ainda nao ha chaves publicas apos gerar as chaves.")
                     return None
             else:
                 return None
         else:
             return None
 
-    print("\nCHAVES PUBLICAS (emails):")
-    for index, email in enumerate(emails, start=1):
-        print(f"{index}) {email}")
+    print("\nCHAVES PUBLICAS (usuario):")
+    for index, item in enumerate(recipients, start=1):
+        print(f"{index}) {item['name']}")
 
     while True:
-        selected = input_with_prompt("Escolha o numero do email destinatario: ").strip()
+        selected = input_with_prompt("Escolha o numero do usuario destinatario: ").strip()
         if not selected.isdigit():
             print("Digite apenas numero.")
             continue
         selected_index = int(selected)
-        if 1 <= selected_index <= len(emails):
-            return emails[selected_index - 1]
+        if 1 <= selected_index <= len(recipients):
+            return recipients[selected_index - 1]["recipient"]
         print("Opcao invalida.")
 
 
@@ -1913,7 +1925,7 @@ def encrypt_file_flow():
     if not ensure_tool_exists("gpg"):
         return
 
-    recipient = choose_recipient_email()
+    recipient = choose_recipient_key()
     if not recipient:
         return
 
@@ -1948,7 +1960,7 @@ def encrypt_text_flow():
     if not ensure_tool_exists("gpg"):
         return
 
-    recipient = choose_recipient_email()
+    recipient = choose_recipient_key()
     if not recipient:
         return
 
